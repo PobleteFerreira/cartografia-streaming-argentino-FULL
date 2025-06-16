@@ -40,7 +40,7 @@ jobs:
         python main.py
         
     - name: Subir resultados como artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: resultados-${{ github.run_id }}
         path: |
@@ -79,7 +79,7 @@ jobs:
     - uses: actions/checkout@v4
     
     - name: Setup Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
         
