@@ -1,0 +1,271 @@
+# ===== .gitignore =====
+# Ignorar archivos sensibles y temporales
+
+# Variables de entorno
+.env
+*.env
+
+# API Keys y configuración sensible
+config/secrets.json
+api_keys.txt
+
+# Archivos de datos generados
+data/*.db
+data/*.csv
+data/*.json
+
+# Logs
+logs/*.log
+logs/*.txt
+
+# Cache
+cache/*.json
+cache/*.pkl
+__pycache__/
+*.pyc
+*.pyo
+
+# Entorno virtual
+venv/
+env/
+.venv/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# Backup files
+*.bak
+*.backup
+
+# ===== .env.example =====
+# Ejemplo de variables de entorno
+# Copia este archivo como .env y completa los valores
+
+# OBLIGATORIO: YouTube Data API v3 Key
+YOUTUBE_API_KEY=tu_api_key_aqui
+
+# OPCIONAL: Configuración de cuota (valores por defecto)
+CUOTA_DIARIA_LIMITE=10000
+CUOTA_BUFFER_SEGURIDAD=500
+
+# OPCIONAL: Filtros mínimos
+MIN_SUSCRIPTORES=500
+MIN_CERTEZA_ARGENTINA=70
+
+# OPCIONAL: Paths personalizados (usar rutas absolutas)
+# DATA_DIR=/ruta/custom/data
+# LOGS_DIR=/ruta/custom/logs
+# CACHE_DIR=/ruta/custom/cache
+
+# ===== setup.py =====
+from setuptools import setup, find_packages
+
+with open("README.md", "r", encoding="utf-8") as fh:
+    long_description = fh.read()
+
+with open("requirements.txt", "r", encoding="utf-8") as fh:
+    requirements = [line.strip() for line in fh if line.strip() and not line.startswith("#")]
+
+setup(
+    name="cartografia-streaming-argentino",
+    version="1.0.0",
+    author="Tu Nombre",
+    author_email="tu-email@ejemplo.com",
+    description="Cartografía completa del streaming argentino en YouTube",
+    long_description=long_description,
+    long_description_content_type="text/markdown",
+    url="https://github.com/tu-usuario/cartografia-streaming-argentino",
+    packages=find_packages(),
+    classifiers=[
+        "Development Status :: 4 - Beta",
+        "Intended Audience :: Researchers",
+        "Topic :: Scientific/Engineering :: Information Analysis",
+        "License :: OSI Approved :: MIT License",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Operating System :: OS Independent",
+    ],
+    python_requires=">=3.8",
+    install_requires=requirements,
+    entry_points={
+        "console_scripts": [
+            "cartografia-streaming=main:main",
+        ],
+    },
+    keywords="youtube, streaming, argentina, data-mining, geographic-analysis",
+)
+
+# ===== run_daily.sh =====
+#!/bin/bash
+# Script para ejecutar el proyecto diariamente
+
+# Configuración
+PROJECT_DIR="/path/to/cartografia-streaming-argentino"
+LOG_FILE="$PROJECT_DIR/logs/daily_execution.log"
+PYTHON_ENV="$PROJECT_DIR/venv/bin/activate"
+
+# Función de logging
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+# Cambiar al directorio del proyecto
+cd "$PROJECT_DIR" || {
+    log "ERROR: No se pudo acceder al directorio $PROJECT_DIR"
+    exit 1
+}
+
+# Activar entorno virtual
+source "$PYTHON_ENV" || {
+    log "ERROR: No se pudo activar el entorno virtual"
+    exit 1
+}
+
+# Verificar que las dependencias estén instaladas
+log "Verificando dependencias..."
+pip check || {
+    log "WARNING: Hay problemas con las dependencias"
+}
+
+# Verificar conectividad
+log "Verificando conectividad a YouTube..."
+if ! ping -c 1 youtube.com &> /dev/null; then
+    log "ERROR: No hay conectividad a YouTube"
+    exit 1
+fi
+
+# Verificar API Key
+if [ -z "$YOUTUBE_API_KEY" ]; then
+    log "ERROR: YOUTUBE_API_KEY no está configurada"
+    exit 1
+fi
+
+# Ejecutar el script principal
+log "Iniciando ejecución diaria..."
+python main.py
+
+RESULT=$?
+
+if [ $RESULT -eq 0 ]; then
+    log "✅ Ejecución completada exitosamente"
+    
+    # Comprimir logs antiguos (más de 7 días)
+    find logs/ -name "*.log" -mtime +7 -exec gzip {} \;
+    
+    # Limpiar cache antiguo (más de 24 horas)
+    find cache/ -name "*.json" -mtime +1 -delete
+    
+    log "Limpieza de archivos completada"
+else
+    log "❌ Ejecución falló con código: $RESULT"
+fi
+
+exit $RESULT
+
+# ===== run_daily.bat =====
+@echo off
+REM Script para Windows para ejecutar el proyecto diariamente
+
+set PROJECT_DIR=C:\path\to\cartografia-streaming-argentino
+set LOG_FILE=%PROJECT_DIR%\logs\daily_execution.log
+set PYTHON_ENV=%PROJECT_DIR%\venv\Scripts\activate.bat
+
+echo [%date% %time%] Iniciando ejecución diaria >> "%LOG_FILE%"
+
+cd /d "%PROJECT_DIR%" || (
+    echo [%date% %time%] ERROR: No se pudo acceder al directorio >> "%LOG_FILE%"
+    exit /b 1
+)
+
+call "%PYTHON_ENV%" || (
+    echo [%date% %time%] ERROR: No se pudo activar el entorno virtual >> "%LOG_FILE%"
+    exit /b 1
+)
+
+if not defined YOUTUBE_API_KEY (
+    echo [%date% %time%] ERROR: YOUTUBE_API_KEY no está configurada >> "%LOG_FILE%"
+    exit /b 1
+)
+
+echo [%date% %time%] Ejecutando main.py... >> "%LOG_FILE%"
+python main.py
+
+if %ERRORLEVEL% equ 0 (
+    echo [%date% %time%] Ejecución completada exitosamente >> "%LOG_FILE%"
+) else (
+    echo [%date% %time%] Ejecución falló con código: %ERRORLEVEL% >> "%LOG_FILE%"
+)
+
+exit /b %ERRORLEVEL%
+
+# ===== install.sh =====
+#!/bin/bash
+# Script de instalación automática
+
+set -e  # Salir si hay error
+
+echo "🇦🇷 Instalando Cartografía Streaming Argentino..."
+echo "=================================================="
+
+# Verificar Python
+if ! command -v python3 &> /dev/null; then
+    echo "❌ Python 3 no está instalado"
+    echo "Instala Python 3.8+ desde https://python.org"
+    exit 1
+fi
+
+PYTHON_VERSION=$(python3 -c "import sys; print('.'.join(map(str, sys.version_info[:2])))")
+echo "✅ Python $PYTHON_VERSION detectado"
+
+# Crear entorno virtual
+echo "📦 Creando entorno virtual..."
+python3 -m venv venv
+source venv/bin/activate
+
+# Actualizar pip
+echo "⬆️  Actualizando pip..."
+pip install --upgrade pip
+
+# Instalar dependencias
+echo "📥 Instalando dependencias..."
+pip install -r requirements.txt
+
+# Instalar modelo de spaCy
+echo "🧠 Instalando modelo de español para spaCy..."
+python -m spacy download es_core_news_sm
+
+# Crear directorios necesarios
+echo "📁 Creando directorios..."
+mkdir -p data logs cache docs
+
+# Configurar archivo de entorno
+if [ ! -f .env ]; then
+    echo "⚙️  Creando archivo .env..."
+    cp .env.example .env
+    echo ""
+    echo "🔑 IMPORTANTE: Edita el archivo .env y agrega tu YOUTUBE_API_KEY"
+    echo "   Obtén tu API key en: https://console.cloud.google.com/"
+fi
+
+# Hacer ejecutables los scripts
+chmod +x run_daily.sh
+
+echo ""
+echo "🎉 Instalación completada!"
+echo "=================================================="
+echo "Próximos pasos:"
+echo "1. Configura tu API key en .env"
+echo "2. Ejecuta: python main.py"
+echo "3. Para automatizar: ./run_daily.sh"
+echo ""
+echo "📚 Lee README.md para más información"
