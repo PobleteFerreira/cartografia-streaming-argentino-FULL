@@ -441,53 +441,82 @@ class ArgentineDetector:
 # =============================================================================
 # CLIENTE YOUTUBE API CON CONTROL ESTRICTO DE CUOTA
 # =============================================================================
-
 class YouTubeClient:
-    """Cliente YouTube con control estricto de cuota"""
+    """Cliente YouTube con control estricto de cuota y rotación de múltiples claves"""
     
     def __init__(self):
         self.logger = logging.getLogger('StreamingArgentina')
         self.quota_tracker = QuotaTracker()
         self.cache = APICache()
-        self.youtube = None
+        self.api_keys = [
+            os.getenv("YOUTUBE_API_KEY", ""),
+            os.getenv("API_KEY_2", "")
+        ]
+        self.api_keys = [k for k in self.api_keys if k]
+        if not self.api_keys:
+            raise Exception("No hay claves de API de YouTube configuradas.")
         
-        if HAS_YOUTUBE_API and Config.YOUTUBE_API_KEY:
-            self.youtube = build('youtube', 'v3', developerKey=Config.YOUTUBE_API_KEY)
+        self.key_index = 0
+        self.youtube = None
+
+        if HAS_YOUTUBE_API and self.api_keys:
+            self.youtube = self._build_client(self.api_keys[self.key_index])
             self.mode = 'production'
         else:
             self.mode = 'simulation'
             self.logger.warning("⚠️  Ejecutando en modo simulación")
-    
+
+    def _build_client(self, api_key):
+        return build('youtube', 'v3', developerKey=api_key)
+
+    def _rotate_key(self):
+        if self.key_index + 1 < len(self.api_keys):
+            self.key_index += 1
+            self.youtube = self._build_client(self.api_keys[self.key_index])
+            self.logger.warning(f"🔄 Cambiando a la clave de API #{self.key_index+1}")
+            return True
+        return False
+
+    def _call_with_rotation(self, func, *args, **kwargs):
+        while True:
+            try:
+                return func(*args, **kwargs)
+            except HttpError as e:
+                if hasattr(e, 'resp') and e.resp.status == 403 and 'quotaExceeded' in str(e):
+                    self.logger.error("❌ Cuota agotada para la clave actual.")
+                    if self._rotate_key():
+                        continue
+                    else:
+                        raise e
+                else:
+                    raise e
+
     def can_make_request(self, cost: int) -> bool:
         """Verificar si se puede hacer una request sin exceder límites"""
         return self.quota_tracker.can_use_quota(cost)
-    
-    def search_channels(self, query: str, max_pages: int = 5) -> List[Dict]:
-        """Buscar canales con paginación controlada"""
+
+    def search_channels(self, query: str, max_pages: int = 5) -> list:
+        """Buscar canales con paginación controlada y rotación de claves"""
         if self.mode == 'simulation':
             return self._simulate_search(query, max_pages)
         
         channels = []
         page_token = None
-        
+
         for page in range(max_pages):
-            # Verificar cuota antes de cada página
             if not self.can_make_request(Config.COST_SEARCH):
                 self.logger.warning(f"⚠️  Cuota insuficiente para continuar búsqueda")
                 break
-            
-            # Verificar cache
+
             cache_key = f"search_{query}_{page}"
             cached = self.cache.get(cache_key)
-            
             if cached:
                 channels.extend(cached['items'])
                 page_token = cached.get('nextPageToken')
                 continue
-            
-            try:
-                # Llamada a la API
-                response = self.youtube.search().list(
+
+            def api_call():
+                return self.youtube.search().list(
                     q=query,
                     part='snippet',
                     type='channel',
@@ -495,21 +524,16 @@ class YouTubeClient:
                     pageToken=page_token,
                     regionCode='AR'
                 ).execute()
-                
+
+            try:
+                response = self._call_with_rotation(api_call)
                 self.quota_tracker.use_quota(Config.COST_SEARCH)
-                
-                # Guardar en cache
                 self.cache.set(cache_key, response)
-                
                 channels.extend(response.get('items', []))
                 page_token = response.get('nextPageToken')
-                
                 if not page_token:
                     break
-                
-                # Pequeña pausa para evitar rate limiting
                 time.sleep(0.5)
-                
             except HttpError as e:
                 self.logger.error(f"Error en búsqueda: {e}")
                 break
@@ -518,92 +542,66 @@ class YouTubeClient:
                 break
         
         return channels
-    
-    def get_channel_details(self, channel_id: str) -> Optional[Dict]:
-        """Obtener detalles completos del canal"""
+
+    def get_channel_details(self, channel_id: str) -> Optional[dict]:
+        """Obtener detalles completos del canal con rotación de claves"""
         if self.mode == 'simulation':
             return self._simulate_channel_details(channel_id)
         
-        # Verificar cuota
         if not self.can_make_request(Config.COST_CHANNEL_DETAILS):
             return None
-        
-        # Verificar cache
+
         cache_key = f"channel_{channel_id}"
         cached = self.cache.get(cache_key)
         if cached:
             return cached
-        
-        try:
-            response = self.youtube.channels().list(
+
+        def api_call():
+            return self.youtube.channels().list(
                 part='snippet,statistics,status,contentDetails',
                 id=channel_id
             ).execute()
-            
+
+        try:
+            response = self._call_with_rotation(api_call)
             self.quota_tracker.use_quota(Config.COST_CHANNEL_DETAILS)
-            
             if response.get('items'):
                 channel = response['items'][0]
-                
-                # Verificar si tiene streaming
                 channel['has_streaming'] = self._check_streaming_capability(channel)
-                
-                # Guardar en cache
                 self.cache.set(cache_key, channel)
-                
                 return channel
-            
         except HttpError as e:
             self.logger.error(f"Error obteniendo canal {channel_id}: {e}")
-        
         return None
-    
-    def get_recent_videos(self, channel_id: str, max_videos: int = 5) -> List[Dict]:
-        """Obtener videos recientes para análisis"""
+
+    def get_recent_videos(self, channel_id: str, max_videos: int = 5) -> list:
+        """Obtener videos recientes para análisis con rotación de claves"""
         if self.mode == 'simulation':
             return self._simulate_recent_videos(channel_id, max_videos)
         
-        # Verificar cuota
         if not self.can_make_request(Config.COST_VIDEO_LIST):
             return []
-        
-        try:
-            response = self.youtube.search().list(
+
+        def api_call():
+            return self.youtube.search().list(
                 channelId=channel_id,
                 part='snippet',
                 order='date',
                 type='video',
                 maxResults=max_videos
             ).execute()
-            
+
+        try:
+            response = self._call_with_rotation(api_call)
             self.quota_tracker.use_quota(Config.COST_VIDEO_LIST)
-            
             return response.get('items', [])
-            
         except HttpError as e:
             self.logger.error(f"Error obteniendo videos: {e}")
             return []
-    
-    def _check_streaming_capability(self, channel_data: Dict) -> bool:
-        """Verificar si el canal tiene capacidad de streaming"""
-        # Verificar por features del canal
-        content_details = channel_data.get('contentDetails', {})
-        
-        # Si tiene lista de uploads, probablemente puede hacer streaming
-        if content_details.get('relatedPlaylists', {}).get('uploads'):
-            stats = channel_data.get('statistics', {})
-            video_count = int(stats.get('videoCount', 0))
-            
-            # Si tiene más de 10 videos, asumimos que puede hacer streaming
-            return video_count > 10
-        
-        return False
-    
-    def _simulate_search(self, query: str, max_pages: int) -> List[Dict]:
-        """Simular búsqueda para desarrollo"""
+
+    # Métodos de simulación (no toques estos)
+    def _simulate_search(self, query: str, max_pages: int) -> list:
         channels = []
-        
-        # Generar canales simulados basados en la query
         for i in range(min(max_pages * 10, 50)):
             channels.append({
                 'id': {'channelId': f'sim_channel_{query}_{i}'},
@@ -613,22 +611,16 @@ class YouTubeClient:
                     'channelId': f'sim_channel_{query}_{i}'
                 }
             })
-        
         return channels
-    
-    def _simulate_channel_details(self, channel_id: str) -> Dict:
-        """Simular detalles del canal"""
+
+    def _simulate_channel_details(self, channel_id: str) -> dict:
         import random
-        
         provinces = list(Config.PROVINCIAS_ARGENTINAS)
-        
         return {
             'id': channel_id,
             'snippet': {
                 'title': f'Canal Simulado {channel_id[-4:]}',
-                'description': f'Soy un streamer argentino de {random.choice(provinces)}. '
-                             f'Hago streams de gaming y charlas. Vos sabés que acá '
-                             f'la pasamos bárbaro che!',
+                'description': f'Soy un streamer argentino de {random.choice(provinces)}.',
                 'country': 'AR',
                 'publishedAt': '2020-01-01T00:00:00Z'
             },
@@ -639,11 +631,9 @@ class YouTubeClient:
             },
             'has_streaming': True
         }
-    
-    def _simulate_recent_videos(self, channel_id: str, max_videos: int) -> List[Dict]:
-        """Simular videos recientes"""
+
+    def _simulate_recent_videos(self, channel_id: str, max_videos: int) -> list:
         videos = []
-        
         for i in range(max_videos):
             videos.append({
                 'snippet': {
@@ -652,8 +642,16 @@ class YouTubeClient:
                     'publishedAt': datetime.now().isoformat()
                 }
             })
-        
         return videos
+
+    def _check_streaming_capability(self, channel_data: dict) -> bool:
+        content_details = channel_data.get('contentDetails', {})
+        if content_details.get('relatedPlaylists', {}).get('uploads'):
+            stats = channel_data.get('statistics', {})
+            video_count = int(stats.get('videoCount', 0))
+            return video_count > 10
+        return False
+
 
 # =============================================================================
 # GESTIÓN DE CUOTA ESTRICTA
