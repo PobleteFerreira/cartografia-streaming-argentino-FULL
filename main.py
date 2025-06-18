@@ -1,14 +1,18 @@
-# CARTOGRAFÍA COMPLETA DEL STREAMING ARGENTINO
-# Proyecto para detectar y mapear todos los streamers argentinos en YouTube
-# Rompe el sesgo algorítmico que oculta el streaming provincial
+#!/usr/bin/env python3
+"""
+CARTOGRAFÍA COMPLETA DEL STREAMING ARGENTINO - VERSIÓN HÍBRIDA
+Detecta y mapea todos los streamers argentinos en YouTube
+Versión optimizada con límite estricto de 10,000 llamadas API diarias
+"""
 
 import os
 import json
 import csv
 import re
-import logging
 import time
-import sqlite3
+import pickle
+import logging
+from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Set
 from dataclasses import dataclass, asdict
@@ -19,13 +23,10 @@ import hashlib
 try:
     from googleapiclient.discovery import build
     from googleapiclient.errors import HttpError
-    import requests
-    import spacy
-    from textblob import TextBlob
-except ImportError as e:
-    print(f"Error: Instala las dependencias faltantes: {e}")
-    print("pip install google-api-python-client spacy textblob requests")
-    exit(1)
+    HAS_YOUTUBE_API = True
+except ImportError:
+    HAS_YOUTUBE_API = False
+    print("⚠️  googleapiclient no instalado. Ejecutando en modo simulación.")
 
 # =============================================================================
 # CONFIGURACIÓN PRINCIPAL
@@ -42,420 +43,472 @@ class StreamerData:
     suscriptores: int
     certeza: float
     metodo_deteccion: str
+    indicadores_argentinidad: List[str]
     url: str
     fecha_deteccion: str
     ultima_actividad: str
     tiene_streaming: bool
     descripcion: str
     pais_detectado: str
+    videos_analizados: int
 
-class ConfiguracionProyecto:
+class Config:
     """Configuración centralizada del proyecto"""
     
-    # API Configuration
+    # API Configuration - LÍMITE ESTRICTO
     YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY', '')
-    CUOTA_DIARIA_LIMITE = 10000
-    CUOTA_BUFFER_SEGURIDAD = 500
+    MAX_DAILY_QUOTA = 10000  # LÍMITE ABSOLUTO
+    SAFETY_BUFFER = 1000     # Buffer de seguridad (9000 efectivo)
+    QUOTA_WARNING_THRESHOLD = 8000  # Advertencia al 80%
     
-    # Filtros mínimos
-    MIN_SUSCRIPTORES = 500
-    MIN_CERTEZA_ARGENTINA = 70
+    # Costos de operaciones API
+    COST_SEARCH = 100       # Búsqueda
+    COST_CHANNEL_DETAILS = 3  # Detalles del canal
+    COST_VIDEO_LIST = 3     # Lista de videos
+    
+    # Filtros mínimos estrictos
+    MIN_SUBSCRIBERS = 500
+    MIN_CERTAINTY_ARGENTINA = 75  # Aumentado para mayor precisión
     
     # Paths
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    DATA_DIR = os.path.join(BASE_DIR, 'data')
-    LOGS_DIR = os.path.join(BASE_DIR, 'logs')
-    CACHE_DIR = os.path.join(BASE_DIR, 'cache')
+    BASE_DIR = Path(__file__).parent
+    DATA_DIR = BASE_DIR / 'data'
+    LOGS_DIR = BASE_DIR / 'logs'
+    CACHE_DIR = BASE_DIR / 'cache'
     
-    # Archivos de salida
-    DB_FILE = os.path.join(DATA_DIR, 'streamers_argentinos.db')
-    CSV_FINAL = os.path.join(DATA_DIR, 'cartografia_streaming_argentino.csv')
-    LOG_FILE = os.path.join(LOGS_DIR, f'ejecucion_{datetime.now().strftime("%Y%m%d")}.log')
+    # Archivos
+    STREAMERS_CSV = DATA_DIR / 'streamers_argentinos.csv'
+    PROCESSED_CHANNELS = CACHE_DIR / 'processed_channels.pkl'
+    API_CACHE = CACHE_DIR / 'api_cache.json'
+    QUOTA_TRACKER = CACHE_DIR / 'quota_tracker.json'
     
-    # Códigos locales argentinos críticos
+    # Provincias argentinas
+    PROVINCIAS_ARGENTINAS = {
+        "Buenos Aires", "CABA", "Córdoba", "Santa Fe", "Mendoza", "Tucumán",
+        "Salta", "Entre Ríos", "Misiones", "Chaco", "Corrientes",
+        "Santiago del Estero", "Jujuy", "Neuquén", "Río Negro",
+        "Formosa", "Chubut", "San Luis", "Catamarca", "La Rioja",
+        "San Juan", "Santa Cruz", "Tierra del Fuego", "La Pampa"
+    }
+    
+    # Códigos locales argentinos
     CODIGOS_ARGENTINOS = {
-        "MZA": "Mendoza", "COR": "Córdoba", "ROS": "Santa Fe", 
+        "MZA": "Mendoza", "COR": "Córdoba", "ROS": "Santa Fe",
         "MDQ": "Buenos Aires", "BRC": "Río Negro", "SLA": "Salta",
         "TUC": "Tucumán", "NQN": "Neuquén", "USH": "Tierra del Fuego",
         "JUJ": "Jujuy", "SFN": "Santa Fe", "CTC": "Catamarca",
         "LRJ": "La Rioja", "FSA": "Formosa", "SGO": "Santiago del Estero"
     }
     
-    # Provincias argentinas completas
-    PROVINCIAS_ARGENTINAS = [
-        "Buenos Aires", "Córdoba", "Santa Fe", "Mendoza", "Tucumán",
-        "Salta", "Entre Ríos", "Misiones", "Chaco", "Corrientes",
-        "Santiago del Estero", "Jujuy", "Neuquén", "Río Negro",
-        "Formosa", "Chubut", "San Luis", "Catamarca", "La Rioja",
-        "San Juan", "Santa Cruz", "Tierra del Fuego", "La Pampa"
-    ]
-    
     @classmethod
-    def crear_directorios(cls):
+    def setup_directories(cls):
         """Crear directorios necesarios"""
-        for directorio in [cls.DATA_DIR, cls.LOGS_DIR, cls.CACHE_DIR]:
-            os.makedirs(directorio, exist_ok=True)
+        for directory in [cls.DATA_DIR, cls.LOGS_DIR, cls.CACHE_DIR]:
+            directory.mkdir(parents=True, exist_ok=True)
 
 # =============================================================================
-# SISTEMA DE LOGGING Y MONITOREO
+# SISTEMA DE LOGGING MEJORADO
 # =============================================================================
 
-class LoggerProyecto:
-    """Sistema de logging especializado para el proyecto"""
+class Logger:
+    """Sistema de logging con estadísticas"""
     
     def __init__(self):
-        self.config = ConfiguracionProyecto()
-        self.setup_logger()
-        self.estadisticas = {
-            'canales_analizados': 0,
-            'streamers_encontrados': 0,
-            'llamadas_api_usadas': 0,
-            'errores': 0,
-            'por_provincia': defaultdict(int)
-        }
-    
-    def setup_logger(self):
+        self.setup_logging()
+        self.stats = defaultdict(int)
+        
+    def setup_logging(self):
         """Configurar sistema de logging"""
-        self.logger = logging.getLogger('StreamingArgentino')
-        self.logger.setLevel(logging.INFO)
+        log_file = Config.LOGS_DIR / f'streaming_{datetime.now():%Y%m%d}.log'
         
-        # Handler para archivo
-        file_handler = logging.FileHandler(self.config.LOG_FILE, encoding='utf-8')
-        file_handler.setLevel(logging.INFO)
-        
-        # Handler para consola
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
-        
-        # Formato
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(log_file, encoding='utf-8'),
+                logging.StreamHandler()
+            ]
         )
-        file_handler.setFormatter(formatter)
-        console_handler.setFormatter(formatter)
-        
-        self.logger.addHandler(file_handler)
-        self.logger.addHandler(console_handler)
+        self.logger = logging.getLogger('StreamingArgentina')
     
-    def log_inicio_fase(self, fase: str, descripcion: str):
-        """Log inicio de nueva fase"""
-        self.logger.info(f"🎯 INICIANDO FASE: {fase}")
-        self.logger.info(f"📋 Descripción: {descripcion}")
-        self.logger.info("=" * 80)
+    def phase_start(self, phase: int, description: str):
+        """Log inicio de fase"""
+        self.logger.info(f"{'='*80}")
+        self.logger.info(f"🎯 INICIANDO FASE {phase}: {description}")
+        self.logger.info(f"{'='*80}")
     
-    def log_streamer_encontrado(self, streamer: StreamerData):
-        """Log cuando se encuentra un nuevo streamer"""
+    def streamer_found(self, streamer: StreamerData):
+        """Log cuando se encuentra un streamer argentino"""
         self.logger.info(
-            f"✅ STREAMER ENCONTRADO: {streamer.nombre_canal} "
-            f"({streamer.provincia}, {streamer.suscriptores} subs, "
-            f"{streamer.certeza:.1f}% certeza)"
+            f"✅ ENCONTRADO: {streamer.nombre_canal} | "
+            f"{streamer.provincia} | {streamer.suscriptores:,} subs | "
+            f"Certeza: {streamer.certeza:.1f}% | "
+            f"Método: {streamer.metodo_deteccion}"
         )
-        self.estadisticas['streamers_encontrados'] += 1
-        self.estadisticas['por_provincia'][streamer.provincia] += 1
+        self.stats['streamers_found'] += 1
+        self.stats[f'provincia_{streamer.provincia}'] += 1
     
-    def log_progreso_busqueda(self, termino: str, pagina: int, encontrados: int):
-        """Log progreso de búsqueda"""
-        self.logger.info(
-            f"🔍 Búsqueda '{termino}' - Página {pagina}: {encontrados} canales encontrados"
+    def channel_rejected(self, channel_name: str, reason: str):
+        """Log cuando se rechaza un canal"""
+        self.logger.debug(f"❌ RECHAZADO: {channel_name} - {reason}")
+        self.stats['channels_rejected'] += 1
+        self.stats[f'rejected_{reason}'] += 1
+    
+    def quota_warning(self, used: int, total: int):
+        """Advertencia de cuota"""
+        percentage = (used / total) * 100
+        self.logger.warning(
+            f"⚠️  CUOTA API: {used:,}/{total:,} ({percentage:.1f}%) - "
+            f"Restante: {total-used:,}"
         )
     
-    def log_estadisticas_diarias(self):
-        """Log estadísticas del día"""
-        self.logger.info("📊 ESTADÍSTICAS DIARIAS:")
-        self.logger.info(f"   Canales analizados: {self.estadisticas['canales_analizados']}")
-        self.logger.info(f"   Streamers encontrados: {self.estadisticas['streamers_encontrados']}")
-        self.logger.info(f"   Llamadas API usadas: {self.estadisticas['llamadas_api_usadas']}")
-        self.logger.info(f"   Errores: {self.estadisticas['errores']}")
+    def daily_summary(self):
+        """Resumen diario de estadísticas"""
+        self.logger.info("\n📊 RESUMEN DIARIO:")
+        self.logger.info(f"   Streamers encontrados: {self.stats['streamers_found']}")
+        self.logger.info(f"   Canales rechazados: {self.stats['channels_rejected']}")
         
-        # Top 5 provincias del día
-        top_provincias = sorted(
-            self.estadisticas['por_provincia'].items(), 
-            key=lambda x: x[1], 
-            reverse=True
-        )[:5]
-        
-        if top_provincias:
-            self.logger.info("   Top provincias encontradas:")
-            for provincia, cantidad in top_provincias:
-                self.logger.info(f"     {provincia}: {cantidad}")
+        # Top provincias
+        provincias = [(k.replace('provincia_', ''), v) 
+                      for k, v in self.stats.items() 
+                      if k.startswith('provincia_')]
+        if provincias:
+            provincias.sort(key=lambda x: x[1], reverse=True)
+            self.logger.info("   Top provincias:")
+            for prov, count in provincias[:5]:
+                self.logger.info(f"     - {prov}: {count}")
 
 # =============================================================================
-# DETECTOR DE ARGENTINIDAD (PNL ESPECIALIZADO)
+# DETECTOR DE ARGENTINIDAD AVANZADO
 # =============================================================================
 
-class DetectorArgentinidad:
-    """Sistema especializado para detectar streamers argentinos"""
+class ArgentineDetector:
+    """Sistema avanzado para detectar streamers argentinos con alta precisión"""
     
     def __init__(self):
-        self.config = ConfiguracionProyecto()
-        self.logger = LoggerProyecto().logger
-        self.setup_patterns()
+        self.logger = logging.getLogger('StreamingArgentina')
+        self._setup_patterns()
     
-    def setup_patterns(self):
+    def _setup_patterns(self):
         """Configurar patrones de detección específicos"""
         
-        # Voseo argentino (súper específico)
+        # Voseo argentino (muy específico)
         self.voseo_patterns = [
-            r'vos tenés', r'vos sabés', r'vos querés', r'vos podés',
-            r'vos andás', r'vos venís', r'vos hacés', r'vos decís',
-            r'vos sos', r'vos estás', r'che vos', r'vos che'
+            r'\bvos\s+(?:tenés|sabés|querés|podés|andás|venís|hacés|decís|sos|estás)\b',
+            r'\b(?:tenés|sabés|querés|podés|andás|venís|hacés|decís)\s+vos\b',
+            r'\bche\s+vos\b', r'\bvos\s+che\b'
         ]
         
-        # Lunfardo y jerga argentina
-        self.jerga_argentina = [
-            'che', 'boludo', 'gil', 'loco', 'flaco', 'gordito',
-            'bárbaro', 'copado', 'zarpado', 'laburo', 'guita',
-            'bondi', 'colectivo', 'subte', 'quilombo'
-        ]
+        # Jerga argentina (actualizada)
+        self.argentine_slang = {
+            'che', 'boludo', 'gil', 'loco', 'flaco', 'capo', 'crack',
+            'bárbaro', 'copado', 'zarpado', 'piola', 'groso', 'genial',
+            'laburo', 'guita', 'mango', 'luca', 'palo',
+            'bondi', 'colectivo', 'subte', 'boliche', 'joda',
+            'quilombo', 'bardo', 'pucho', 'faso', 'birra',
+            'pibe', 'piba', 'pendejo', 'wacho', 'chabón'
+        }
         
-        # Cultura argentina específica
-        self.cultura_argentina = [
+        # Cultura argentina
+        self.argentine_culture = {
             'mate', 'asado', 'empanadas', 'choripán', 'milanesas',
-            'alfajores', 'dulce de leche', 'boca', 'river', 'maradona',
-            'messi', 'tango', 'folklore', 'cuarteto', 'bariloche'
-        ]
+            'alfajores', 'dulce de leche', 'facturas', 'medialunas',
+            'boca', 'river', 'racing', 'independiente', 'san lorenzo',
+            'maradona', 'messi', 'gardel', 'tango', 'folklore',
+            'cuarteto', 'cumbia', 'rock nacional', 'charly garcía'
+        }
         
-        # Horarios argentinos
-        self.horarios_argentinos = [
-            r'\d+hs', r'\d+ hs', 'hora argentina', 'ART', 'UTC-3'
+        # Indicadores de horario argentino
+        self.argentine_time_patterns = [
+            r'\d+\s*hs', r'hora argentina', r'ART', r'UTC-3',
+            r'buenos aires time', r'argentina time'
         ]
         
         # Exclusiones automáticas (otros países)
-        self.exclusiones = [
-            'españa', 'méxico', 'chile', 'colombia', 'perú', 'uruguay',
-            'bolivia', 'venezuela', 'ecuador', 'paraguay', 'brasil',
-            'madrid', 'barcelona', 'cdmx', 'bogotá', 'lima', 'santiago'
-        ]
+        self.country_exclusions = {
+            'españa': ['españa', 'español', 'madrid', 'barcelona', 'valencia'],
+            'mexico': ['méxico', 'mexicano', 'cdmx', 'guadalajara', 'monterrey'],
+            'chile': ['chile', 'chileno', 'santiago de chile', 'valparaíso'],
+            'colombia': ['colombia', 'colombiano', 'bogotá', 'medellín', 'cali'],
+            'peru': ['perú', 'peruano', 'lima', 'cusco', 'arequipa'],
+            'uruguay': ['uruguay', 'uruguayo', 'montevideo', 'punta del este'],
+            'venezuela': ['venezuela', 'venezolano', 'caracas', 'maracaibo'],
+            'ecuador': ['ecuador', 'ecuatoriano', 'quito', 'guayaquil'],
+            'paraguay': ['paraguay', 'paraguayo', 'asunción', 'ciudad del este'],
+            'bolivia': ['bolivia', 'boliviano', 'la paz', 'santa cruz de la sierra']
+        }
     
-    def detectar_explicitamente(self, texto: str) -> Optional[Dict]:
-        """Detección explícita de argentinidad"""
-        texto_lower = texto.lower()
+    def detect_explicit_argentina(self, text: str) -> Optional[Dict]:
+        """Detección explícita de referencias a Argentina"""
+        text_lower = text.lower()
         
         # 1. Menciona Argentina directamente
-        if any(palabra in texto_lower for palabra in ['argentina', 'argentino', 'argentinos']):
-            return {
-                'metodo': 'explicito',
-                'argentino': True,
-                'confianza': 95,
-                'indicador': 'menciona_argentina'
-            }
+        argentina_mentions = ['argentina', 'argentino', 'argentinos', 'argentinas', 'arg 🇦🇷']
+        for mention in argentina_mentions:
+            if mention in text_lower:
+                return {
+                    'method': 'explicit_country',
+                    'is_argentine': True,
+                    'confidence': 95,
+                    'indicators': [f'menciona_{mention}']
+                }
         
         # 2. Códigos locales argentinos
-        for codigo, provincia in self.config.CODIGOS_ARGENTINOS.items():
-            if codigo.lower() in texto_lower:
+        for code, province in Config.CODIGOS_ARGENTINOS.items():
+            if re.search(rf'\b{code.lower()}\b', text_lower):
                 return {
-                    'metodo': 'codigo_local',
-                    'argentino': True,
-                    'confianza': 92,
-                    'provincia': provincia,
-                    'codigo': codigo
+                    'method': 'local_code',
+                    'is_argentine': True,
+                    'confidence': 92,
+                    'province': province,
+                    'indicators': [f'codigo_{code}']
                 }
         
         # 3. Provincias argentinas
-        for provincia in self.config.PROVINCIAS_ARGENTINAS:
-            if provincia.lower() in texto_lower:
+        for province in Config.PROVINCIAS_ARGENTINAS:
+            if province.lower() in text_lower:
                 return {
-                    'metodo': 'provincia',
-                    'argentino': True,
-                    'confianza': 88,
-                    'provincia': provincia
-                }
-        
-        # 4. Exclusión automática
-        for exclusion in self.exclusiones:
-            if exclusion in texto_lower:
-                return {
-                    'metodo': 'exclusion',
-                    'argentino': False,
-                    'motivo': f'menciona_{exclusion}'
+                    'method': 'province_mention',
+                    'is_argentine': True,
+                    'confidence': 88,
+                    'province': province,
+                    'indicators': [f'provincia_{province}']
                 }
         
         return None
     
-    def analizar_patrones_culturales(self, texto: str) -> Dict:
-        """Análisis de patrones culturales argentinos"""
-        texto_lower = texto.lower()
-        score = 0
-        indicadores = []
+    def detect_other_countries(self, text: str) -> Optional[Dict]:
+        """Detectar si menciona otros países (exclusión)"""
+        text_lower = text.lower()
         
-        # Voseo (peso alto)
-        voseo_count = sum(1 for pattern in self.voseo_patterns 
-                         if re.search(pattern, texto_lower))
-        if voseo_count > 0:
-            score += voseo_count * 15
-            indicadores.append(f'voseo({voseo_count})')
+        for country, indicators in self.country_exclusions.items():
+            matches = [ind for ind in indicators if ind in text_lower]
+            if matches:
+                return {
+                    'method': 'other_country',
+                    'is_argentine': False,
+                    'confidence': 90,
+                    'country': country,
+                    'indicators': matches
+                }
+        
+        return None
+    
+    def analyze_cultural_patterns(self, text: str) -> Dict:
+        """Análisis profundo de patrones culturales argentinos"""
+        text_lower = text.lower()
+        score = 0
+        indicators = []
+        
+        # Voseo (peso muy alto)
+        voseo_matches = []
+        for pattern in self.voseo_patterns:
+            matches = re.findall(pattern, text_lower)
+            voseo_matches.extend(matches)
+        
+        if voseo_matches:
+            score += len(voseo_matches) * 20
+            indicators.append(f'voseo_{len(voseo_matches)}')
         
         # Jerga argentina
-        jerga_count = sum(1 for jerga in self.jerga_argentina 
-                         if jerga in texto_lower)
-        if jerga_count > 0:
-            score += jerga_count * 8
-            indicadores.append(f'jerga({jerga_count})')
+        slang_found = [slang for slang in self.argentine_slang if slang in text_lower]
+        if slang_found:
+            score += len(slang_found) * 10
+            indicators.append(f'jerga_{len(slang_found)}')
         
         # Cultura argentina
-        cultura_count = sum(1 for cultura in self.cultura_argentina 
-                           if cultura in texto_lower)
-        if cultura_count > 0:
-            score += cultura_count * 6
-            indicadores.append(f'cultura({cultura_count})')
+        culture_found = [culture for culture in self.argentine_culture if culture in text_lower]
+        if culture_found:
+            score += len(culture_found) * 8
+            indicators.append(f'cultura_{len(culture_found)}')
         
         # Horarios argentinos
-        horario_count = sum(1 for pattern in self.horarios_argentinos 
-                           if re.search(pattern, texto_lower))
-        if horario_count > 0:
-            score += horario_count * 10
-            indicadores.append(f'horarios({horario_count})')
+        time_matches = sum(1 for pattern in self.argentine_time_patterns 
+                          if re.search(pattern, text_lower))
+        if time_matches:
+            score += time_matches * 15
+            indicators.append(f'horarios_{time_matches}')
         
-        # Convertir score a porcentaje de confianza
-        confianza = min(90, score * 2)
+        # Calcular confianza (máximo 95%)
+        confidence = min(95, score * 1.5)
         
         return {
-            'metodo': 'patrones_culturales',
-            'argentino': confianza >= 70,
-            'confianza': confianza,
+            'method': 'cultural_patterns',
+            'is_argentine': confidence >= Config.MIN_CERTAINTY_ARGENTINA,
+            'confidence': confidence,
             'score': score,
-            'indicadores': indicadores
+            'indicators': indicators
         }
     
-    def detectar_region(self, texto: str) -> Dict:
+    def detect_region(self, text: str) -> Tuple[str, float]:
         """Detectar región específica dentro de Argentina"""
-        texto_lower = texto.lower()
+        text_lower = text.lower()
         
-        regiones = {
-            'rioplatense': {
-                'indicadores': ['che', 'boludo', 'subte', 'bondi', 'laburo'],
-                'provincias': ['Buenos Aires', 'CABA', 'Entre Ríos']
+        regions = {
+            'Buenos Aires': {
+                'indicators': ['caba', 'capital federal', 'porteño', 'bonaerense', 'la plata'],
+                'weight': 1.2
             },
-            'cuyo': {
-                'indicadores': ['mza', 'vino', 'vendimia', 'cordillera', 'aconcagua'],
-                'provincias': ['Mendoza', 'San Juan', 'San Luis']
+            'Córdoba': {
+                'indicators': ['córdoba', 'cordobés', 'fernet', 'cuarteto', 'la docta'],
+                'weight': 1.1
             },
-            'noa': {
-                'indicadores': ['sla', 'folklore', 'empanadas', 'locro', 'zamba'],
-                'provincias': ['Salta', 'Jujuy', 'Tucumán', 'Santiago del Estero']
+            'Mendoza': {
+                'indicators': ['mendoza', 'mendocino', 'mza', 'vino', 'vendimia', 'aconcagua'],
+                'weight': 1.1
             },
-            'patagonia': {
-                'indicadores': ['brc', 'nieve', 'lago', 'cordero', 'bariloche', 'ushuaia'],
-                'provincias': ['Neuquén', 'Río Negro', 'Chubut', 'Santa Cruz', 'Tierra del Fuego']
+            'Santa Fe': {
+                'indicators': ['rosario', 'santafesino', 'ros', 'paraná'],
+                'weight': 1.0
+            },
+            'Patagonia': {
+                'indicators': ['bariloche', 'patagonia', 'neuquén', 'ushuaia', 'calafate'],
+                'weight': 1.0
             }
         }
         
-        for region, datos in regiones.items():
-            score = sum(1 for indicador in datos['indicadores'] 
-                       if indicador in texto_lower)
-            if score >= 2:
-                return {
-                    'region': region,
-                    'provincias_probables': datos['provincias'],
-                    'confianza': min(90, 60 + score * 10),
-                    'indicadores': [ind for ind in datos['indicadores'] 
-                                  if ind in texto_lower]
-                }
+        best_region = 'Argentina'
+        best_score = 0
         
-        return {'region': 'Argentina - Región incierta', 'confianza': 50}
+        for region, data in regions.items():
+            score = sum(data['weight'] for ind in data['indicators'] if ind in text_lower)
+            if score > best_score:
+                best_score = score
+                best_region = region
+        
+        confidence_boost = min(10, best_score * 5)
+        return best_region, confidence_boost
     
-    def analizar_argentinidad_completa(self, texto_completo: str) -> Dict:
-        """Análisis completo de argentinidad"""
-        # Paso 1: Detección explícita
-        resultado_explicito = self.detectar_explicitamente(texto_completo)
-        if resultado_explicito:
-            if resultado_explicito['argentino']:
-                # Detectar región específica
-                region = self.detectar_region(texto_completo)
-                resultado_explicito.update(region)
-            return resultado_explicito
+    def analyze_channel(self, channel_data: Dict, videos_data: List[Dict] = None) -> Dict:
+        """Análisis completo de un canal para determinar si es argentino"""
         
-        # Paso 2: Análisis de patrones culturales
-        resultado_patrones = self.analizar_patrones_culturales(texto_completo)
+        # Construir texto completo para análisis
+        snippet = channel_data.get('snippet', {})
+        text_parts = [
+            snippet.get('title', ''),
+            snippet.get('description', ''),
+            snippet.get('country', '')
+        ]
         
-        if resultado_patrones['confianza'] >= 70:
-            # Detectar región si es argentino
-            if resultado_patrones['argentino']:
-                region = self.detectar_region(texto_completo)
-                resultado_patrones.update(region)
-            return resultado_patrones
+        # Agregar información de videos si está disponible
+        if videos_data:
+            for video in videos_data[:10]:  # Máximo 10 videos
+                video_snippet = video.get('snippet', {})
+                text_parts.extend([
+                    video_snippet.get('title', ''),
+                    video_snippet.get('description', '')[:200]  # Primeros 200 chars
+                ])
         
-        # Paso 3: Insuficiente evidencia
+        full_text = ' '.join(text_parts)
+        
+        # Paso 1: Verificar exclusiones de otros países
+        other_country = self.detect_other_countries(full_text)
+        if other_country and other_country['confidence'] > 80:
+            return {
+                'is_argentine': False,
+                'confidence': 0,
+                'reason': f"Canal de {other_country['country']}",
+                'method': 'country_exclusion',
+                'indicators': other_country['indicators']
+            }
+        
+        # Paso 2: Detección explícita de Argentina
+        explicit = self.detect_explicit_argentina(full_text)
+        if explicit:
+            region, confidence_boost = self.detect_region(full_text)
+            explicit['confidence'] = min(100, explicit['confidence'] + confidence_boost)
+            explicit['province'] = explicit.get('province', region)
+            return explicit
+        
+        # Paso 3: Análisis de patrones culturales
+        cultural = self.analyze_cultural_patterns(full_text)
+        
+        if cultural['is_argentine']:
+            region, confidence_boost = self.detect_region(full_text)
+            cultural['confidence'] = min(100, cultural['confidence'] + confidence_boost)
+            cultural['province'] = region
+            return cultural
+        
+        # Paso 4: No hay evidencia suficiente
         return {
-            'argentino': False,
-            'metodo': 'insuficiente_evidencia',
-            'confianza': resultado_patrones['confianza']
+            'is_argentine': False,
+            'confidence': cultural['confidence'],
+            'reason': 'Evidencia insuficiente',
+            'method': 'insufficient_evidence',
+            'indicators': cultural.get('indicators', [])
         }
 
 # =============================================================================
-# CLIENTE YOUTUBE API OPTIMIZADO
+# CLIENTE YOUTUBE API CON CONTROL ESTRICTO DE CUOTA
 # =============================================================================
 
-class YouTubeAPIClient:
-    """Cliente optimizado para YouTube API con gestión de cuota"""
+class YouTubeClient:
+    """Cliente YouTube con control estricto de cuota"""
     
     def __init__(self):
-        self.config = ConfiguracionProyecto()
-        self.logger = LoggerProyecto().logger
-        self.llamadas_usadas = 0
-        self.youtube = build('youtube', 'v3', developerKey=self.config.YOUTUBE_API_KEY)
-        self.cache = CacheInteligente()
-    
-    def puede_hacer_llamada(self, costo: int = 1) -> bool:
-        """Verificar si se puede hacer una llamada API"""
-        limite_efectivo = self.config.CUOTA_DIARIA_LIMITE - self.config.CUOTA_BUFFER_SEGURIDAD
-        return (self.llamadas_usadas + costo) <= limite_efectivo
-    
-    def registrar_llamada(self, costo: int = 1):
-        """Registrar uso de cuota"""
-        self.llamadas_usadas += costo
+        self.logger = logging.getLogger('StreamingArgentina')
+        self.quota_tracker = QuotaTracker()
+        self.cache = APICache()
+        self.youtube = None
         
-        # Log cuando se acerca al límite
-        if self.llamadas_usadas > (self.config.CUOTA_DIARIA_LIMITE * 0.8):
-            self.logger.warning(
-                f"⚠️  Cuota alta: {self.llamadas_usadas}/{self.config.CUOTA_DIARIA_LIMITE}"
-            )
+        if HAS_YOUTUBE_API and Config.YOUTUBE_API_KEY:
+            self.youtube = build('youtube', 'v3', developerKey=Config.YOUTUBE_API_KEY)
+            self.mode = 'production'
+        else:
+            self.mode = 'simulation'
+            self.logger.warning("⚠️  Ejecutando en modo simulación")
     
-    def buscar_canales(self, termino: str, max_paginas: int = 50) -> List[Dict]:
-        """Búsqueda profunda de canales con paginación"""
-        canales_encontrados = []
-        next_page_token = None
+    def can_make_request(self, cost: int) -> bool:
+        """Verificar si se puede hacer una request sin exceder límites"""
+        return self.quota_tracker.can_use_quota(cost)
+    
+    def search_channels(self, query: str, max_pages: int = 5) -> List[Dict]:
+        """Buscar canales con paginación controlada"""
+        if self.mode == 'simulation':
+            return self._simulate_search(query, max_pages)
         
-        for pagina in range(1, max_paginas + 1):
-            if not self.puede_hacer_llamada():
-                self.logger.warning(f"⚠️  Cuota agotada en página {pagina}")
+        channels = []
+        page_token = None
+        
+        for page in range(max_pages):
+            # Verificar cuota antes de cada página
+            if not self.can_make_request(Config.COST_SEARCH):
+                self.logger.warning(f"⚠️  Cuota insuficiente para continuar búsqueda")
                 break
             
+            # Verificar cache
+            cache_key = f"search_{query}_{page}"
+            cached = self.cache.get(cache_key)
+            
+            if cached:
+                channels.extend(cached['items'])
+                page_token = cached.get('nextPageToken')
+                continue
+            
             try:
-                # Verificar cache primero
-                cache_key = f"search_{termino}_{pagina}"
-                resultado_cache = self.cache.obtener(cache_key)
+                # Llamada a la API
+                response = self.youtube.search().list(
+                    q=query,
+                    part='snippet',
+                    type='channel',
+                    maxResults=50,
+                    pageToken=page_token,
+                    regionCode='AR'
+                ).execute()
                 
-                if resultado_cache:
-                    response = resultado_cache
-                else:
-                    # Llamada a API
-                    search_response = self.youtube.search().list(
-                        q=termino,
-                        part='snippet',
-                        type='channel',
-                        maxResults=50,
-                        pageToken=next_page_token,
-                        regionCode='AR'  # Sesgo hacia Argentina
-                    ).execute()
-                    
-                    response = search_response
-                    self.cache.guardar(cache_key, response)
-                    self.registrar_llamada(1)
+                self.quota_tracker.use_quota(Config.COST_SEARCH)
                 
-                canales_pagina = response.get('items', [])
-                canales_encontrados.extend(canales_pagina)
+                # Guardar en cache
+                self.cache.set(cache_key, response)
                 
-                self.logger.info(
-                    f"🔍 '{termino}' - Página {pagina}: {len(canales_pagina)} canales"
-                )
+                channels.extend(response.get('items', []))
+                page_token = response.get('nextPageToken')
                 
-                next_page_token = response.get('nextPageToken')
-                if not next_page_token:
+                if not page_token:
                     break
                 
-                # Pausa para evitar rate limiting
-                time.sleep(0.1)
+                # Pequeña pausa para evitar rate limiting
+                time.sleep(0.5)
                 
             except HttpError as e:
                 self.logger.error(f"Error en búsqueda: {e}")
@@ -464,748 +517,833 @@ class YouTubeAPIClient:
                 self.logger.error(f"Error inesperado: {e}")
                 break
         
-        return canales_encontrados
+        return channels
     
-    def obtener_detalles_canal(self, canal_id: str) -> Optional[Dict]:
-        """Obtener detalles completos de un canal"""
-        if not self.puede_hacer_llamada(3):  # Costo mayor por información completa
+    def get_channel_details(self, channel_id: str) -> Optional[Dict]:
+        """Obtener detalles completos del canal"""
+        if self.mode == 'simulation':
+            return self._simulate_channel_details(channel_id)
+        
+        # Verificar cuota
+        if not self.can_make_request(Config.COST_CHANNEL_DETAILS):
             return None
         
         # Verificar cache
-        cache_key = f"channel_{canal_id}"
-        resultado_cache = self.cache.obtener(cache_key)
-        
-        if resultado_cache:
-            return resultado_cache
+        cache_key = f"channel_{channel_id}"
+        cached = self.cache.get(cache_key)
+        if cached:
+            return cached
         
         try:
-            # Obtener información del canal
-            channel_response = self.youtube.channels().list(
-                part='snippet,statistics,contentDetails,status,brandingSettings',
-                id=canal_id
+            response = self.youtube.channels().list(
+                part='snippet,statistics,status,contentDetails',
+                id=channel_id
             ).execute()
             
-            self.registrar_llamada(3)
+            self.quota_tracker.use_quota(Config.COST_CHANNEL_DETAILS)
             
-            if not channel_response.get('items'):
-                return None
-            
-            canal_info = channel_response['items'][0]
-            
-            # Verificar si tiene streaming
-            tiene_streaming = self.verificar_streaming(canal_id)
-            canal_info['tiene_streaming'] = tiene_streaming
-            
-            # Cache del resultado
-            self.cache.guardar(cache_key, canal_info)
-            
-            return canal_info
+            if response.get('items'):
+                channel = response['items'][0]
+                
+                # Verificar si tiene streaming
+                channel['has_streaming'] = self._check_streaming_capability(channel)
+                
+                # Guardar en cache
+                self.cache.set(cache_key, channel)
+                
+                return channel
             
         except HttpError as e:
-            self.logger.error(f"Error obteniendo detalles de {canal_id}: {e}")
-            return None
+            self.logger.error(f"Error obteniendo canal {channel_id}: {e}")
+        
+        return None
     
-    def verificar_streaming(self, canal_id: str) -> bool:
-        """Verificar si el canal tiene capacidad de streaming"""
-        try:
-            # Buscar videos en vivo o próximos
-            search_response = self.youtube.search().list(
-                channelId=canal_id,
-                part='snippet',
-                eventType='live',
-                type='video',
-                maxResults=1
-            ).execute()
-            
-            if search_response.get('items'):
-                return True
-            
-            # Buscar en streams programados
-            search_response = self.youtube.search().list(
-                channelId=canal_id,
-                part='snippet',
-                eventType='upcoming', 
-                type='video',
-                maxResults=1
-            ).execute()
-            
-            return bool(search_response.get('items'))
-            
-        except:
-            # Si hay error, asumir que no tiene streaming
-            return False
-    
-    def obtener_videos_recientes(self, canal_id: str, max_videos: int = 10) -> List[Dict]:
-        """Obtener videos recientes del canal para análisis"""
-        if not self.puede_hacer_llamada():
+    def get_recent_videos(self, channel_id: str, max_videos: int = 5) -> List[Dict]:
+        """Obtener videos recientes para análisis"""
+        if self.mode == 'simulation':
+            return self._simulate_recent_videos(channel_id, max_videos)
+        
+        # Verificar cuota
+        if not self.can_make_request(Config.COST_VIDEO_LIST):
             return []
         
         try:
-            search_response = self.youtube.search().list(
-                channelId=canal_id,
+            response = self.youtube.search().list(
+                channelId=channel_id,
                 part='snippet',
                 order='date',
                 type='video',
                 maxResults=max_videos
             ).execute()
             
-            self.registrar_llamada(1)
-            return search_response.get('items', [])
+            self.quota_tracker.use_quota(Config.COST_VIDEO_LIST)
+            
+            return response.get('items', [])
             
         except HttpError as e:
-            self.logger.error(f"Error obteniendo videos de {canal_id}: {e}")
+            self.logger.error(f"Error obteniendo videos: {e}")
             return []
+    
+    def _check_streaming_capability(self, channel_data: Dict) -> bool:
+        """Verificar si el canal tiene capacidad de streaming"""
+        # Verificar por features del canal
+        content_details = channel_data.get('contentDetails', {})
+        
+        # Si tiene lista de uploads, probablemente puede hacer streaming
+        if content_details.get('relatedPlaylists', {}).get('uploads'):
+            stats = channel_data.get('statistics', {})
+            video_count = int(stats.get('videoCount', 0))
+            
+            # Si tiene más de 10 videos, asumimos que puede hacer streaming
+            return video_count > 10
+        
+        return False
+    
+    def _simulate_search(self, query: str, max_pages: int) -> List[Dict]:
+        """Simular búsqueda para desarrollo"""
+        channels = []
+        
+        # Generar canales simulados basados en la query
+        for i in range(min(max_pages * 10, 50)):
+            channels.append({
+                'id': {'channelId': f'sim_channel_{query}_{i}'},
+                'snippet': {
+                    'title': f'Canal {query} #{i}',
+                    'description': f'Canal de streaming argentino sobre {query}',
+                    'channelId': f'sim_channel_{query}_{i}'
+                }
+            })
+        
+        return channels
+    
+    def _simulate_channel_details(self, channel_id: str) -> Dict:
+        """Simular detalles del canal"""
+        import random
+        
+        provinces = list(Config.PROVINCIAS_ARGENTINAS)
+        
+        return {
+            'id': channel_id,
+            'snippet': {
+                'title': f'Canal Simulado {channel_id[-4:]}',
+                'description': f'Soy un streamer argentino de {random.choice(provinces)}. '
+                             f'Hago streams de gaming y charlas. Vos sabés que acá '
+                             f'la pasamos bárbaro che!',
+                'country': 'AR',
+                'publishedAt': '2020-01-01T00:00:00Z'
+            },
+            'statistics': {
+                'subscriberCount': str(random.randint(500, 50000)),
+                'videoCount': str(random.randint(50, 500)),
+                'viewCount': str(random.randint(10000, 1000000))
+            },
+            'has_streaming': True
+        }
+    
+    def _simulate_recent_videos(self, channel_id: str, max_videos: int) -> List[Dict]:
+        """Simular videos recientes"""
+        videos = []
+        
+        for i in range(max_videos):
+            videos.append({
+                'snippet': {
+                    'title': f'Stream de gaming argentino - Parte {i+1}',
+                    'description': 'Jugando con los pibes, che vení que arrancamos!',
+                    'publishedAt': datetime.now().isoformat()
+                }
+            })
+        
+        return videos
 
 # =============================================================================
-# SISTEMA DE CACHE INTELIGENTE
+# GESTIÓN DE CUOTA ESTRICTA
 # =============================================================================
 
-class CacheInteligente:
-    """Sistema de cache para evitar llamadas duplicadas a la API"""
+class QuotaTracker:
+    """Control estricto de cuota API"""
     
     def __init__(self):
-        self.config = ConfiguracionProyecto()
-        self.cache_file = os.path.join(self.config.CACHE_DIR, 'api_cache.json')
-        self.cache_data = self.cargar_cache()
+        self.logger = logging.getLogger('StreamingArgentina')
+        self.quota_file = Config.QUOTA_TRACKER
+        self.load_quota()
     
-    def cargar_cache(self) -> Dict:
-        """Cargar cache desde archivo"""
-        if os.path.exists(self.cache_file):
+    def load_quota(self):
+        """Cargar estado de cuota"""
+        if self.quota_file.exists():
             try:
-                with open(self.cache_file, 'r', encoding='utf-8') as f:
+                with open(self.quota_file, 'r') as f:
+                    data = json.load(f)
+                    
+                # Verificar si es del día actual
+                if data.get('date') == datetime.now().strftime('%Y-%m-%d'):
+                    self.used_quota = data.get('used', 0)
+                else:
+                    self.used_quota = 0
+            except:
+                self.used_quota = 0
+        else:
+            self.used_quota = 0
+    
+    def save_quota(self):
+        """Guardar estado de cuota"""
+        data = {
+            'date': datetime.now().strftime('%Y-%m-%d'),
+            'used': self.used_quota,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        with open(self.quota_file, 'w') as f:
+            json.dump(data, f, indent=2)
+    
+    def can_use_quota(self, cost: int) -> bool:
+        """Verificar si se puede usar cuota"""
+        effective_limit = Config.MAX_DAILY_QUOTA - Config.SAFETY_BUFFER
+        return (self.used_quota + cost) <= effective_limit
+    
+    def use_quota(self, cost: int):
+        """Registrar uso de cuota"""
+        self.used_quota += cost
+        self.save_quota()
+        
+        # Logging según umbral
+        if self.used_quota > Config.QUOTA_WARNING_THRESHOLD:
+            self.logger.warning(
+                f"⚠️  CUOTA ALTA: {self.used_quota:,}/{Config.MAX_DAILY_QUOTA:,} "
+                f"({(self.used_quota/Config.MAX_DAILY_QUOTA)*100:.1f}%)"
+            )
+        
+        # Detener si se alcanza el límite
+        if self.used_quota >= (Config.MAX_DAILY_QUOTA - Config.SAFETY_BUFFER):
+            self.logger.error("❌ CUOTA AGOTADA - Deteniendo ejecución")
+            raise Exception("Cuota diaria agotada")
+    
+    def get_remaining(self) -> int:
+        """Obtener cuota restante"""
+        return Config.MAX_DAILY_QUOTA - self.used_quota
+
+# =============================================================================
+# CACHE INTELIGENTE
+# =============================================================================
+
+class APICache:
+    """Cache para respuestas de API"""
+    
+    def __init__(self):
+        self.cache_file = Config.API_CACHE
+        self.cache_data = self.load_cache()
+    
+    def load_cache(self) -> Dict:
+        """Cargar cache desde archivo"""
+        if self.cache_file.exists():
+            try:
+                with open(self.cache_file, 'r') as f:
                     return json.load(f)
             except:
                 return {}
         return {}
     
-    def guardar_cache(self):
+    def save_cache(self):
         """Guardar cache a archivo"""
-        try:
-            with open(self.cache_file, 'w', encoding='utf-8') as f:
-                json.dump(self.cache_data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"Error guardando cache: {e}")
+        with open(self.cache_file, 'w') as f:
+            json.dump(self.cache_data, f, indent=2)
     
-    def obtener(self, key: str) -> Optional[Dict]:
+    def get(self, key: str) -> Optional[Dict]:
         """Obtener valor del cache"""
-        cache_entry = self.cache_data.get(key)
-        if cache_entry:
-            # Verificar si no ha expirado (24 horas)
-            timestamp = cache_entry.get('timestamp', 0)
-            if time.time() - timestamp < 86400:  # 24 horas
-                return cache_entry.get('data')
+        entry = self.cache_data.get(key)
+        if entry:
+            # Cache válido por 7 días
+            timestamp = entry.get('timestamp', 0)
+            if time.time() - timestamp < 604800:  # 7 días
+                return entry.get('data')
         return None
     
-    def guardar(self, key: str, data: Dict):
-        """Guardar valor en cache"""
+    def set(self, key: str, data: Dict):
+        """Guardar en cache"""
         self.cache_data[key] = {
             'data': data,
             'timestamp': time.time()
         }
         
-        # Guardar a archivo cada 10 entradas
+        # Guardar cada 10 entradas
         if len(self.cache_data) % 10 == 0:
-            self.guardar_cache()
+            self.save_cache()
 
 # =============================================================================
-# BASE DE DATOS SQLITE
+# GESTOR DE DATOS Y CSV
 # =============================================================================
 
-class DatabaseManager:
-    """Gestor de base de datos para streamers argentinos"""
+class DataManager:
+    """Gestor de datos y archivos CSV"""
     
     def __init__(self):
-        self.config = ConfiguracionProyecto()
-        self.db_path = self.config.DB_FILE
-        self.init_database()
+        self.logger = logging.getLogger('StreamingArgentina')
+        self.processed_channels = self.load_processed_channels()
+        self.streamers_data = self.load_streamers_data()
     
-    def init_database(self):
-        """Inicializar base de datos"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS streamers (
-                canal_id TEXT PRIMARY KEY,
-                nombre_canal TEXT NOT NULL,
-                categoria TEXT,
-                provincia TEXT,
-                ciudad TEXT,
-                suscriptores INTEGER,
-                certeza REAL,
-                metodo_deteccion TEXT,
-                url TEXT,
-                fecha_deteccion TEXT,
-                ultima_actividad TEXT,
-                tiene_streaming BOOLEAN,
-                descripcion TEXT,
-                pais_detectado TEXT,
-                datos_completos TEXT
-            )
-        ''')
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS busquedas_realizadas (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                termino TEXT,
-                paginas_exploradas INTEGER,
-                canales_encontrados INTEGER,
-                fecha_busqueda TEXT
-            )
-        ''')
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS estadisticas_diarias (
-                fecha TEXT PRIMARY KEY,
-                canales_analizados INTEGER,
-                streamers_encontrados INTEGER,
-                llamadas_api INTEGER,
-                distribucion_provincial TEXT
-            )
-        ''')
-        
-        conn.commit()
-        conn.close()
+    def load_processed_channels(self) -> Set[str]:
+        """Cargar canales ya procesados"""
+        if Config.PROCESSED_CHANNELS.exists():
+            try:
+                with open(Config.PROCESSED_CHANNELS, 'rb') as f:
+                    return pickle.load(f)
+            except:
+                return set()
+        return set()
     
-    def existe_canal(self, canal_id: str) -> bool:
-        """Verificar si el canal ya fue procesado"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT 1 FROM streamers WHERE canal_id = ?', (canal_id,))
-        resultado = cursor.fetchone() is not None
-        
-        conn.close()
-        return resultado
+    def save_processed_channels(self):
+        """Guardar canales procesados"""
+        with open(Config.PROCESSED_CHANNELS, 'wb') as f:
+            pickle.dump(self.processed_channels, f)
     
-    def guardar_streamer(self, streamer: StreamerData):
-        """Guardar streamer en base de datos"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT OR REPLACE INTO streamers 
-            (canal_id, nombre_canal, categoria, provincia, ciudad, suscriptores,
-             certeza, metodo_deteccion, url, fecha_deteccion, ultima_actividad,
-             tiene_streaming, descripcion, pais_detectado, datos_completos)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            streamer.canal_id, streamer.nombre_canal, streamer.categoria,
-            streamer.provincia, streamer.ciudad, streamer.suscriptores,
-            streamer.certeza, streamer.metodo_deteccion, streamer.url,
-            streamer.fecha_deteccion, streamer.ultima_actividad,
-            streamer.tiene_streaming, streamer.descripcion,
-            streamer.pais_detectado, json.dumps(asdict(streamer))
-        ))
-        
-        conn.commit()
-        conn.close()
+    def load_streamers_data(self) -> List[Dict]:
+        """Cargar datos de streamers existentes"""
+        streamers = []
+        if Config.STREAMERS_CSV.exists():
+            try:
+                with open(Config.STREAMERS_CSV, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    streamers = list(reader)
+            except:
+                pass
+        return streamers
     
-    def obtener_estadisticas(self) -> Dict:
-        """Obtener estadísticas generales"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+    def is_channel_processed(self, channel_id: str) -> bool:
+        """Verificar si un canal ya fue procesado"""
+        return channel_id in self.processed_channels
+    
+    def mark_channel_processed(self, channel_id: str):
+        """Marcar canal como procesado"""
+        self.processed_channels.add(channel_id)
         
-        # Total de streamers
-        cursor.execute('SELECT COUNT(*) FROM streamers WHERE pais_detectado = "Argentina"')
-        total_streamers = cursor.fetchone()[0]
+        # Guardar cada 50 canales
+        if len(self.processed_channels) % 50 == 0:
+            self.save_processed_channels()
+    
+    def save_streamer(self, streamer: StreamerData):
+        """Guardar streamer en CSV"""
+        # Verificar si el archivo existe para determinar si escribir headers
+        write_headers = not Config.STREAMERS_CSV.exists()
         
-        # Por provincia
-        cursor.execute('''
-            SELECT provincia, COUNT(*) 
-            FROM streamers 
-            WHERE pais_detectado = "Argentina"
-            GROUP BY provincia 
-            ORDER BY COUNT(*) DESC
-        ''')
-        por_provincia = dict(cursor.fetchall())
+        with open(Config.STREAMERS_CSV, 'a', newline='', encoding='utf-8') as f:
+            fieldnames = [
+                'canal_id', 'nombre_canal', 'categoria', 'provincia', 'ciudad',
+                'suscriptores', 'certeza', 'metodo_deteccion', 'indicadores_argentinidad',
+                'url', 'fecha_deteccion', 'ultima_actividad', 'tiene_streaming',
+                'descripcion', 'pais_detectado', 'videos_analizados'
+            ]
+            
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            
+            if write_headers:
+                writer.writeheader()
+            
+            # Convertir StreamerData a dict
+            row = asdict(streamer)
+            # Convertir lista de indicadores a string
+            row['indicadores_argentinidad'] = ', '.join(row['indicadores_argentinidad'])
+            
+            writer.writerow(row)
         
-        # Por categoría
-        cursor.execute('''
-            SELECT categoria, COUNT(*) 
-            FROM streamers 
-            WHERE pais_detectado = "Argentina"
-            GROUP BY categoria 
-            ORDER BY COUNT(*) DESC
-        ''')
-        por_categoria = dict(cursor.fetchall())
-        
-        conn.close()
-        
-        return {
-            'total_streamers': total_streamers,
-            'por_provincia': por_provincia,
-            'por_categoria': por_categoria
+        # Agregar a datos en memoria
+        self.streamers_data.append(row)
+    
+    def get_statistics(self) -> Dict:
+        """Obtener estadísticas de streamers encontrados"""
+        stats = {
+            'total': len(self.streamers_data),
+            'por_provincia': defaultdict(int),
+            'por_categoria': defaultdict(int),
+            'por_metodo': defaultdict(int)
         }
-    
-    def exportar_csv(self):
-        """Exportar datos a CSV final"""
-        conn = sqlite3.connect(self.db_path)
         
-        with open(self.config.CSV_FINAL, 'w', newline='', encoding='utf-8') as csvfile:
-            writer = csv.writer(csvfile)
-            writer.writerow([
-                'Canal', 'Categoria', 'Provincia', 'Ciudad', 'Suscriptores',
-                'Certeza', 'Metodo_Deteccion', 'URL', 'Fecha_Deteccion'
-            ])
-            
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT nombre_canal, categoria, provincia, ciudad, suscriptores,
-                       certeza, metodo_deteccion, url, fecha_deteccion
-                FROM streamers 
-                WHERE pais_detectado = "Argentina"
-                ORDER BY suscriptores DESC
-            ''')
-            
-            for row in cursor.fetchall():
-                writer.writerow(row)
+        for streamer in self.streamers_data:
+            stats['por_provincia'][streamer['provincia']] += 1
+            stats['por_categoria'][streamer['categoria']] += 1
+            stats['por_metodo'][streamer['metodo_deteccion']] += 1
         
-        conn.close()
+        return stats
 
 # =============================================================================
 # ANALIZADOR DE CANALES
 # =============================================================================
 
-class AnalizadorCanal:
-    """Analizador completo de canales para determinar si son streamers argentinos"""
+class ChannelAnalyzer:
+    """Analizador completo de canales"""
     
-    def __init__(self):
-        self.config = ConfiguracionProyecto()
-        self.detector = DetectorArgentinidad()
-        self.youtube = YouTubeAPIClient()
-        self.db = DatabaseManager()
-        self.logger = LoggerProyecto().logger
+    def __init__(self, youtube_client: YouTubeClient, detector: ArgentineDetector):
+        self.youtube = youtube_client
+        self.detector = detector
+        self.logger = logging.getLogger('StreamingArgentina')
     
-    def categorizar_canal(self, descripcion: str, videos_recientes: List[Dict]) -> str:
-        """Determinar categoría del canal basado en contenido"""
-        texto_completo = descripcion.lower()
+    def categorize_channel(self, description: str, videos: List[Dict]) -> str:
+        """Categorizar canal basado en contenido"""
+        text = description.lower()
         
-        # Agregar títulos de videos recientes al análisis
-        for video in videos_recientes[:5]:
-            titulo = video.get('snippet', {}).get('title', '').lower()
-            texto_completo += f" {titulo}"
+        # Agregar títulos de videos
+        for video in videos[:5]:
+            text += ' ' + video.get('snippet', {}).get('title', '').lower()
         
-        # Categorías con palabras clave
-        categorias = {
-            'Gaming': ['gaming', 'games', 'juegos', 'videojuegos', 'twitch', 'stream gaming', 'gamer'],
-            'Charlas': ['charlas', 'entrevistas', 'podcast', 'conversaciones', 'talks', 'bunker', 'mesa redonda'],
-            'Música': ['música', 'music', 'covers', 'cantante', 'banda', 'artista', 'musical'],
-            'Cocina': ['cocina', 'recetas', 'cooking', 'chef', 'gastronomía', 'comida'],
-            'Educativo': ['educativo', 'tutorial', 'enseñanza', 'clases', 'aprende', 'educación'],
-            'Entretenimiento': ['entretenimiento', 'humor', 'comedia', 'sketches', 'variedades'],
-            'Deportes': ['deportes', 'fútbol', 'sports', 'deporte', 'análisis deportivo'],
-            'Tecnología': ['tecnología', 'tech', 'programación', 'código', 'desarrollo'],
-            'Arte': ['arte', 'dibujo', 'pintura', 'diseño', 'manualidades', 'creatividad'],
-            'Viajes': ['viajes', 'turismo', 'travel', 'aventura', 'lugares']
+        categories = {
+            'Gaming': ['gaming', 'games', 'juegos', 'videojuegos', 'gamer', 'twitch', 'minecraft', 'fortnite'],
+            'Charlas/Podcast': ['charlas', 'podcast', 'entrevista', 'conversación', 'debate', 'opinión'],
+            'IRL/Vlogs': ['irl', 'vlog', 'vida', 'día', 'diario', 'salida', 'aventura'],
+            'Música': ['música', 'music', 'cantante', 'banda', 'cover', 'canción', 'musical'],
+            'Cocina': ['cocina', 'receta', 'cooking', 'comida', 'gastronomía', 'chef'],
+            'Educativo': ['educativo', 'tutorial', 'clase', 'enseña', 'aprende', 'curso'],
+            'Deportes': ['deporte', 'fútbol', 'basket', 'tenis', 'gym', 'entrena'],
+            'Tecnología': ['tech', 'tecnología', 'programación', 'código', 'software'],
+            'Arte': ['arte', 'dibujo', 'pintura', 'diseño', 'ilustración', 'creativo']
         }
         
-        # Contar coincidencias por categoría
-        scores = {}
-        for categoria, palabras in categorias.items():
-            score = sum(1 for palabra in palabras if palabra in texto_completo)
-            if score > 0:
-                scores[categoria] = score
+        scores = defaultdict(int)
+        for category, keywords in categories.items():
+            for keyword in keywords:
+                if keyword in text:
+                    scores[category] += 1
         
-        # Devolver categoría con mayor score
         if scores:
             return max(scores.items(), key=lambda x: x[1])[0]
         
-        return 'General'
+        return 'Entretenimiento'
     
-    def analizar_canal_completo(self, canal_info: Dict) -> Optional[StreamerData]:
+    def analyze_channel(self, channel_snippet: Dict) -> Optional[StreamerData]:
         """Análisis completo de un canal"""
         try:
-            snippet = canal_info.get('snippet', {})
-            statistics = canal_info.get('statistics', {})
+            # Obtener ID del canal
+            channel_id = (channel_snippet.get('id', {}).get('channelId') or 
+                         channel_snippet.get('id'))
             
-            canal_id = canal_info.get('id', '')
-            nombre_canal = snippet.get('title', 'Sin nombre')
-            descripcion = snippet.get('description', '')
+            if not channel_id:
+                return None
             
-            # Verificar filtros mínimos
-            suscriptores = int(statistics.get('subscriberCount', 0))
-            if suscriptores < self.config.MIN_SUSCRIPTORES:
+            # Obtener detalles completos
+            channel_details = self.youtube.get_channel_details(channel_id)
+            if not channel_details:
+                return None
+            
+            # Verificar requisitos mínimos
+            stats = channel_details.get('statistics', {})
+            subscribers = int(stats.get('subscriberCount', 0))
+            
+            if subscribers < Config.MIN_SUBSCRIBERS:
+                self.logger.debug(f"Canal {channel_id} rechazado: pocos suscriptores ({subscribers})")
                 return None
             
             # Verificar si tiene streaming
-            tiene_streaming = canal_info.get('tiene_streaming', False)
-            if not tiene_streaming:
+            if not channel_details.get('has_streaming', False):
+                self.logger.debug(f"Canal {channel_id} rechazado: sin capacidad de streaming")
                 return None
             
             # Obtener videos recientes para análisis
-            videos_recientes = self.youtube.obtener_videos_recientes(canal_id)
+            recent_videos = self.youtube.get_recent_videos(channel_id, max_videos=5)
             
-            # Construir texto completo para análisis
-            texto_completo = f"{nombre_canal} {descripcion}"
-            for video in videos_recientes:
-                video_snippet = video.get('snippet', {})
-                titulo = video_snippet.get('title', '')
-                desc_video = video_snippet.get('description', '')
-                texto_completo += f" {titulo} {desc_video}"
+            # Analizar argentinidad
+            analysis = self.detector.analyze_channel(channel_details, recent_videos)
             
-            # Análisis de argentinidad
-            resultado_argentinidad = self.detector.analizar_argentinidad_completa(texto_completo)
-            
-            if not resultado_argentinidad.get('argentino', False):
+            if not analysis['is_argentine']:
+                reason = analysis.get('reason', 'No argentino')
+                self.logger.debug(f"Canal {channel_id} rechazado: {reason}")
                 return None
             
-            if resultado_argentinidad.get('confianza', 0) < self.config.MIN_CERTEZA_ARGENTINA:
+            if analysis['confidence'] < Config.MIN_CERTAINTY_ARGENTINA:
+                self.logger.debug(
+                    f"Canal {channel_id} rechazado: certeza baja ({analysis['confidence']}%)"
+                )
                 return None
-            
-            # Determinar provincia y ciudad
-            provincia = resultado_argentinidad.get('provincia', 'Provincia Incierta')
-            region = resultado_argentinidad.get('region', '')
-            if provincia == 'Provincia Incierta' and region:
-                provincia = f"Argentina - {region}"
-            
-            ciudad = 'Ciudad Incierta'  # Se podría mejorar con análisis más específico
             
             # Categorizar canal
-            categoria = self.categorizar_canal(descripcion, videos_recientes)
+            snippet = channel_details.get('snippet', {})
+            category = self.categorize_channel(
+                snippet.get('description', ''),
+                recent_videos
+            )
             
             # Crear objeto StreamerData
             streamer = StreamerData(
-                canal_id=canal_id,
-                nombre_canal=nombre_canal,
-                categoria=categoria,
-                provincia=provincia,
-                ciudad=ciudad,
-                suscriptores=suscriptores,
-                certeza=resultado_argentinidad.get('confianza', 0),
-                metodo_deteccion=resultado_argentinidad.get('metodo', 'desconocido'),
-                url=f"https://youtube.com/channel/{canal_id}",
+                canal_id=channel_id,
+                nombre_canal=snippet.get('title', 'Sin nombre'),
+                categoria=category,
+                provincia=analysis.get('province', 'Argentina'),
+                ciudad='Por determinar',
+                suscriptores=subscribers,
+                certeza=analysis['confidence'],
+                metodo_deteccion=analysis['method'],
+                indicadores_argentinidad=analysis.get('indicators', []),
+                url=f"https://youtube.com/channel/{channel_id}",
                 fecha_deteccion=datetime.now().strftime('%Y-%m-%d'),
                 ultima_actividad=snippet.get('publishedAt', ''),
-                tiene_streaming=tiene_streaming,
-                descripcion=descripcion[:500],  # Limitar tamaño
-                pais_detectado='Argentina'
+                tiene_streaming=True,
+                descripcion=snippet.get('description', '')[:500],
+                pais_detectado='Argentina',
+                videos_analizados=len(recent_videos)
             )
             
             return streamer
             
         except Exception as e:
-            self.logger.error(f"Error analizando canal {canal_info.get('id', 'desconocido')}: {e}")
+            self.logger.error(f"Error analizando canal: {e}")
             return None
 
 # =============================================================================
-# ESTRATEGIAS DE BÚSQUEDA ANTI-SESGO
+# ESTRATEGIAS DE BÚSQUEDA
 # =============================================================================
 
-class EstrategiaBusqueda:
-    """Estrategias de búsqueda específicas para combatir el sesgo geográfico"""
+class SearchStrategy:
+    """Estrategias de búsqueda optimizadas"""
+    
+    @staticmethod
+    def get_phase_queries(phase: int) -> List[Tuple[str, int]]:
+        """Obtener queries según la fase"""
+        
+        if phase == 1:
+            # Términos generales - profundidad moderada
+            return [
+                ('streaming argentina', 10),
+                ('youtuber argentino', 10),
+                ('argentina gaming', 8),
+                ('canal argentino', 8),
+                ('twitch argentina', 6),
+                ('stream argentino', 6),
+                ('gamer argentina', 5),
+                ('creador contenido argentina', 5),
+            ]
+        
+        elif phase == 2:
+            # Búsqueda por provincias principales
+            queries = []
+            
+            # Provincias grandes
+            for prov in ['Buenos Aires', 'Córdoba', 'Santa Fe', 'Mendoza']:
+                queries.extend([
+                    (f'streaming {prov}', 8),
+                    (f'youtuber {prov}', 6),
+                    (f'gaming {prov}', 5),
+                ])
+            
+            # Provincias medianas
+            for prov in ['Tucumán', 'Salta', 'Neuquén', 'Entre Ríos']:
+                queries.extend([
+                    (f'streaming {prov}', 10),
+                    (f'canal {prov}', 8),
+                ])
+            
+            return queries
+        
+        elif phase == 3:
+            # Búsqueda por códigos locales
+            queries = []
+            
+            for code, province in Config.CODIGOS_ARGENTINOS.items():
+                queries.extend([
+                    (f'{code} streaming', 12),
+                    (f'{code} gaming', 10),
+                    (f'youtuber {code}', 8),
+                ])
+            
+            return queries
+        
+        else:  # phase 4
+            # Búsquedas culturales específicas
+            return [
+                ('che streaming gaming', 8),
+                ('mate twitch', 6),
+                ('asado streaming', 5),
+                ('argentina vlog irl', 8),
+                ('buenos aires youtuber', 6),
+                ('patagonia streaming', 10),
+                ('streaming folklore argentina', 8),
+                ('gaming quilmes', 6),
+                ('streaming rosario', 8),
+                ('youtuber mendoza vino', 6),
+            ]
+
+# =============================================================================
+# MOTOR PRINCIPAL
+# =============================================================================
+
+class StreamingArgentinaEngine:
+    """Motor principal del proyecto"""
     
     def __init__(self):
-        self.config = ConfiguracionProyecto()
-        self.logger = LoggerProyecto().logger
+        Config.setup_directories()
+        
+        self.logger_system = Logger()
+        self.logger = self.logger_system.logger
+        
+        self.youtube = YouTubeClient()
+        self.detector = ArgentineDetector()
+        self.analyzer = ChannelAnalyzer(self.youtube, self.detector)
+        self.data_manager = DataManager()
+        
+        self.channels_analyzed_today = 0
+        self.streamers_found_today = 0
     
-    def obtener_terminos_fase_1(self) -> List[Tuple[str, int]]:
-        """Términos generales con máxima profundidad (Días 1-30)"""
-        return [
-            # Términos amplios - profundidad moderada para CABA
-            ('argentina', 25),
-            ('argentino', 25), 
-            ('argentinos', 20),
-            ('streaming argentina', 30),
-            ('youtuber argentina', 25),
-            ('canal argentino', 20),
-            ('gaming argentina', 25),
-            ('en vivo argentina', 20),
-        ]
-    
-    def obtener_terminos_fase_2(self) -> List[Tuple[str, int]]:
-        """Términos provinciales con profundidad variable (Días 31-60)"""
-        terminos = []
+    def process_search_term(self, term: str, max_pages: int) -> int:
+        """Procesar un término de búsqueda"""
+        self.logger.info(f"🔍 Buscando: '{term}' (máx {max_pages} páginas)")
         
-        # Provincias grandes - profundidad alta
-        provincias_grandes = ['Buenos Aires', 'Córdoba', 'Santa Fe', 'Mendoza']
-        for provincia in provincias_grandes:
-            terminos.extend([
-                (f'streaming {provincia}', 40),
-                (f'gaming {provincia}', 35),
-                (f'youtuber {provincia}', 30),
-                (f'en vivo {provincia}', 25)
-            ])
+        channels = self.youtube.search_channels(term, max_pages)
         
-        # Provincias medianas - profundidad muy alta
-        provincias_medianas = ['Tucumán', 'Salta', 'Entre Ríos', 'Misiones', 'Chaco', 'Corrientes']
-        for provincia in provincias_medianas:
-            terminos.extend([
-                (f'streaming {provincia}', 50),
-                (f'gaming {provincia}', 45),
-                (f'youtuber {provincia}', 40)
-            ])
-        
-        # Provincias pequeñas - máxima profundidad
-        provincias_pequenas = ['Catamarca', 'La Rioja', 'Formosa', 'San Luis', 'Tierra del Fuego']
-        for provincia in provincias_pequenas:
-            terminos.extend([
-                (f'streaming {provincia}', 50),
-                (f'gaming {provincia}', 50),
-                (f'canal {provincia}', 50)
-            ])
-        
-        return terminos
-    
-    def obtener_terminos_fase_3(self) -> List[Tuple[str, int]]:
-        """Términos por códigos locales (Días 61-90)"""
-        terminos = []
-        
-        for codigo, provincia in self.config.CODIGOS_ARGENTINOS.items():
-            terminos.extend([
-                (f'bunker {codigo.lower()}', 50),
-                (f'charlas {codigo.lower()}', 50),
-                (f'gaming {codigo.lower()}', 45),
-                (f'streaming {codigo.lower()}', 45),
-                (f'en vivo {codigo.lower()}', 40)
-            ])
-        
-        return terminos
-    
-    def obtener_terminos_fase_4(self) -> List[Tuple[str, int]]:
-        """Términos culturales híper-específicos (Días 91-120)"""
-        return [
-            # Combinaciones culturales regionales
-            ('mate gaming', 30),
-            ('folklore streaming', 35),
-            ('tango en vivo', 25),
-            ('asado live', 20),
-            ('che gaming', 40),
-            ('boludo streaming', 35),
-            ('cuarteto en vivo', 30),
-            ('chamamé live', 40),
-            ('empanadas streaming', 25),
-            ('vino gaming', 30),
-            ('cordillera live', 25),
-            ('patagonia streaming', 35),
-            ('noa gaming', 30),
-            ('cuyo en vivo', 25),
-            ('litoral streaming', 30),
-            ('pampa gaming', 25)
-        ]
-
-# =============================================================================
-# MOTOR PRINCIPAL DE BÚSQUEDA
-# =============================================================================
-
-class MotorBusquedaStreaming:
-    """Motor principal que ejecuta la búsqueda completa"""
-    
-    def __init__(self):
-        self.config = ConfiguracionProyecto()
-        self.youtube = YouTubeAPIClient()
-        self.analizador = AnalizadorCanal()
-        self.db = DatabaseManager()
-        self.logger_sistema = LoggerProyecto()
-        self.logger = self.logger_sistema.logger
-        self.estrategia = EstrategiaBusqueda()
-        
-        # Estadísticas de sesión
-        self.canales_procesados = set()
-        self.streamers_encontrados_hoy = 0
-    
-    def filtrar_canales_duplicados(self, canales: List[Dict]) -> List[Dict]:
-        """Filtrar canales duplicados y ya procesados"""
-        canales_unicos = []
-        ids_vistos = set()
-        
-        for canal in canales:
-            canal_id = canal.get('id', {}).get('channelId') or canal.get('id')
-            if canal_id and canal_id not in ids_vistos and canal_id not in self.canales_procesados:
-                if not self.db.existe_canal(canal_id):
-                    canales_unicos.append(canal)
-                    ids_vistos.add(canal_id)
-                    self.canales_procesados.add(canal_id)
-        
-        return canales_unicos
-    
-    def ejecutar_busqueda_termino(self, termino: str, max_paginas: int) -> int:
-        """Ejecutar búsqueda para un término específico"""
-        self.logger.info(f"🔍 INICIANDO BÚSQUEDA: '{termino}' (hasta {max_paginas} páginas)")
-        
-        # Buscar canales
-        canales_encontrados = self.youtube.buscar_canales(termino, max_paginas)
-        
-        if not canales_encontrados:
-            self.logger.warning(f"⚠️  No se encontraron canales para '{termino}'")
+        if not channels:
+            self.logger.warning(f"No se encontraron canales para '{term}'")
             return 0
         
-        # Filtrar duplicados
-        canales_unicos = self.filtrar_canales_duplicados(canales_encontrados)
+        # Filtrar canales ya procesados
+        new_channels = []
+        for channel in channels:
+            channel_id = (channel.get('id', {}).get('channelId') or 
+                         channel.get('id'))
+            if channel_id and not self.data_manager.is_channel_processed(channel_id):
+                new_channels.append(channel)
+                self.data_manager.mark_channel_processed(channel_id)
         
-        self.logger.info(f"📊 '{termino}': {len(canales_encontrados)} encontrados, {len(canales_unicos)} únicos")
+        self.logger.info(f"📊 {len(channels)} encontrados, {len(new_channels)} nuevos")
         
-        streamers_encontrados = 0
+        streamers_found = 0
         
-        # Analizar cada canal
-        for i, canal_snippet in enumerate(canales_unicos, 1):
-            if not self.youtube.puede_hacer_llamada(3):
-                self.logger.warning("⚠️  Cuota agotada, pausando análisis")
+        for i, channel in enumerate(new_channels, 1):
+            # Verificar cuota antes de analizar
+            if not self.youtube.can_make_request(Config.COST_CHANNEL_DETAILS + Config.COST_VIDEO_LIST):
+                self.logger.warning("⚠️  Cuota insuficiente para continuar análisis")
                 break
             
-            try:
-                canal_id = canal_snippet.get('id', {}).get('channelId') or canal_snippet.get('id')
-                if not canal_id:
-                    continue
+            self.channels_analyzed_today += 1
+            
+            # Analizar canal
+            streamer = self.analyzer.analyze_channel(channel)
+            
+            if streamer:
+                # Guardar streamer
+                self.data_manager.save_streamer(streamer)
+                self.logger_system.streamer_found(streamer)
                 
-                # Obtener detalles completos
-                canal_completo = self.youtube.obtener_detalles_canal(canal_id)
-                if not canal_completo:
-                    continue
-                
-                # Analizar si es streamer argentino
-                streamer = self.analizador.analizar_canal_completo(canal_completo)
-                
-                if streamer:
-                    # Guardar en base de datos
-                    self.db.guardar_streamer(streamer)
-                    
-                    # Log del hallazgo
-                    self.logger_sistema.log_streamer_encontrado(streamer)
-                    
-                    streamers_encontrados += 1
-                    self.streamers_encontrados_hoy += 1
-                
-                # Log progreso cada 50 canales
-                if i % 50 == 0:
-                    self.logger.info(
-                        f"📈 Progreso '{termino}': {i}/{len(canales_unicos)} analizados, "
-                        f"{streamers_encontrados} streamers encontrados"
-                    )
-                
-            except Exception as e:
-                self.logger.error(f"Error procesando canal: {e}")
-                continue
+                streamers_found += 1
+                self.streamers_found_today += 1
+            
+            # Log de progreso
+            if i % 20 == 0:
+                self.logger.info(
+                    f"📈 Progreso: {i}/{len(new_channels)} analizados, "
+                    f"{streamers_found} streamers encontrados"
+                )
         
-        self.logger.info(
-            f"✅ COMPLETADO '{termino}': {streamers_encontrados} streamers argentinos encontrados"
-        )
-        
-        return streamers_encontrados
+        return streamers_found
     
-    def ejecutar_fase(self, numero_fase: int, terminos: List[Tuple[str, int]]) -> Dict:
-        """Ejecutar una fase completa de búsqueda"""
-        self.logger_sistema.log_inicio_fase(
-            f"FASE {numero_fase}",
-            f"Búsqueda con {len(terminos)} términos específicos"
+    def execute_phase(self, phase: int) -> Dict:
+        """Ejecutar una fase completa"""
+        queries = SearchStrategy.get_phase_queries(phase)
+        
+        self.logger_system.phase_start(
+            phase,
+            f"{len(queries)} búsquedas específicas"
         )
         
-        resultados_fase = {
-            'terminos_procesados': 0,
-            'streamers_encontrados': 0,
-            'total_canales_analizados': 0
+        results = {
+            'phase': phase,
+            'queries_processed': 0,
+            'streamers_found': 0
         }
         
-        for termino, max_paginas in terminos:
-            if not self.youtube.puede_hacer_llamada(100):  # Reservar cuota mínima
+        for query, max_pages in queries:
+            # Verificar cuota disponible
+            min_quota_needed = Config.COST_SEARCH * 2  # Al menos 2 búsquedas
+            if not self.youtube.can_make_request(min_quota_needed):
                 self.logger.warning("⚠️  Cuota insuficiente para continuar fase")
                 break
             
             try:
-                streamers_termino = self.ejecutar_busqueda_termino(termino, max_paginas)
+                found = self.process_search_term(query, max_pages)
+                results['queries_processed'] += 1
+                results['streamers_found'] += found
                 
-                resultados_fase['terminos_procesados'] += 1
-                resultados_fase['streamers_encontrados'] += streamers_termino
-                
-                # Pausa entre términos
+                # Pausa entre búsquedas
                 time.sleep(1)
                 
             except Exception as e:
-                self.logger.error(f"Error en término '{termino}': {e}")
-                continue
+                self.logger.error(f"Error procesando '{query}': {e}")
+                if "Cuota diaria agotada" in str(e):
+                    break
         
-        self.logger.info(
-            f"🎯 FASE {numero_fase} COMPLETADA: "
-            f"{resultados_fase['streamers_encontrados']} streamers encontrados"
-        )
-        
-        return resultados_fase
+        return results
     
-    def ejecutar_dia_completo(self) -> Dict:
-        """Ejecutar búsqueda completa de un día"""
-        inicio = time.time()
+    def run_daily_execution(self) -> Dict:
+        """Ejecutar proceso diario completo"""
+        start_time = time.time()
+        
+        self.logger.info("="*80)
         self.logger.info("🚀 INICIANDO EJECUCIÓN DIARIA")
-        self.logger.info(f"📅 Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        self.logger.info(f"📅 Fecha: {datetime.now():%Y-%m-%d %H:%M:%S}")
+        self.logger.info(f"🔋 Cuota disponible: {self.youtube.quota_tracker.get_remaining():,}")
+        self.logger.info("="*80)
         
-        # Determinar qué fase ejecutar según el día del proyecto
-        # Para simplificar, rotamos entre fases
-        dia_año = datetime.now().timetuple().tm_yday
-        fase_actual = (dia_año % 4) + 1
+        # Determinar fase según día
+        day_of_year = datetime.now().timetuple().tm_yday
+        current_phase = (day_of_year % 4) + 1
         
-        resultados_dia = {'fase_ejecutada': fase_actual, 'streamers_encontrados': 0}
+        results = {'phase': current_phase, 'streamers_found': 0}
         
         try:
-            if fase_actual == 1:
-                terminos = self.estrategia.obtener_terminos_fase_1()
-                resultados = self.ejecutar_fase(1, terminos)
-            elif fase_actual == 2:
-                terminos = self.estrategia.obtener_terminos_fase_2()
-                resultados = self.ejecutar_fase(2, terminos)
-            elif fase_actual == 3:
-                terminos = self.estrategia.obtener_terminos_fase_3()
-                resultados = self.ejecutar_fase(3, terminos)
-            else:
-                terminos = self.estrategia.obtener_terminos_fase_4()
-                resultados = self.ejecutar_fase(4, terminos)
-            
-            resultados_dia.update(resultados)
+            # Ejecutar fase correspondiente
+            phase_results = self.execute_phase(current_phase)
+            results.update(phase_results)
             
         except Exception as e:
-            self.logger.error(f"Error crítico en ejecución diaria: {e}")
+            self.logger.error(f"Error en ejecución: {e}")
+        
+        # Guardar datos pendientes
+        self.data_manager.save_processed_channels()
         
         # Estadísticas finales
-        duracion = time.time() - inicio
-        self.logger.info(f"⏱️  Ejecución completada en {duracion/60:.1f} minutos")
-        self.logger.info(f"📊 Streamers encontrados hoy: {self.streamers_encontrados_hoy}")
-        self.logger.info(f"🔥 Llamadas API usadas: {self.youtube.llamadas_usadas}")
+        duration = (time.time() - start_time) / 60
+        stats = self.data_manager.get_statistics()
         
-        # Exportar CSV actualizado
-        self.db.exportar_csv()
+        self.logger.info("\n" + "="*80)
+        self.logger.info("📊 RESUMEN DE EJECUCIÓN")
+        self.logger.info("="*80)
+        self.logger.info(f"⏱️  Duración: {duration:.1f} minutos")
+        self.logger.info(f"🔍 Canales analizados hoy: {self.channels_analyzed_today}")
+        self.logger.info(f"✅ Streamers encontrados hoy: {self.streamers_found_today}")
+        self.logger.info(f"🔋 Cuota API usada: {self.youtube.quota_tracker.used_quota:,}")
+        self.logger.info(f"📈 TOTAL ACUMULADO: {stats['total']} streamers argentinos")
         
-        # Log estadísticas generales
-        estadisticas = self.db.obtener_estadisticas()
-        self.logger.info(f"📈 TOTAL PROYECTO: {estadisticas['total_streamers']} streamers argentinos")
+        # Top 5 provincias
+        if stats['por_provincia']:
+            self.logger.info("\n🏆 TOP 5 PROVINCIAS:")
+            for prov, count in sorted(stats['por_provincia'].items(), 
+                                     key=lambda x: x[1], reverse=True)[:5]:
+                self.logger.info(f"   {prov}: {count}")
         
-        self.logger_sistema.log_estadisticas_diarias()
+        self.logger_system.daily_summary()
         
-        return resultados_dia
+        return results
 
 # =============================================================================
-# SCRIPT PRINCIPAL
+# FUNCIONES AUXILIARES
+# =============================================================================
+
+def create_github_action() -> str:
+    """Crear archivo GitHub Action"""
+    return """name: Cartografía Streaming Argentino
+
+on:
+  schedule:
+    - cron: '0 8 * * *'  # 8 AM UTC (5 AM Argentina)
+  workflow_dispatch:
+
+jobs:
+  search-streamers:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install dependencies
+      run: |
+        pip install google-api-python-client
+    
+    - name: Run streamer search
+      env:
+        YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+      run: |
+        python cartografia_streaming_argentino.py
+    
+    - name: Commit results
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add data/
+        git diff --quiet && git diff --staged --quiet || git commit -m "Update: $(date +'%Y-%m-%d') streaming data"
+        git push
+"""
+
+def create_readme() -> str:
+    """Crear README del proyecto"""
+    return """# 🎯 Cartografía Completa del Streaming Argentino
+
+## 📋 Descripción
+
+Sistema automatizado para detectar y mapear TODOS los streamers argentinos en YouTube, combatiendo el sesgo algorítmico que oculta el talento provincial.
+
+## 🚀 Características
+
+- **Detección precisa**: Sistema avanzado de NLP para identificar streamers argentinos
+- **Anti-sesgo geográfico**: Búsquedas específicas por provincia y región
+- **Control estricto de cuota**: Máximo 10,000 llamadas API por día
+- **Análisis profundo**: Verifica streaming activo, categorización automática
+- **Automatización completa**: GitHub Actions para ejecución diaria
+
+## 📊 Datos Recopilados
+
+- Nombre del canal
+- Provincia/región
+- Categoría de contenido
+- Número de suscriptores
+- Certeza de detección
+- Método de detección
+- Indicadores de argentinidad
+
+## 🛠️ Instalación
+
+1. Clonar el repositorio
+2. Instalar dependencias: `pip install google-api-python-client`
+3. Configurar API key: `export YOUTUBE_API_KEY='tu_key'`
+4. Ejecutar: `python cartografia_streaming_argentino.py`
+
+## 📈 Resultados
+
+Los resultados se guardan en `data/streamers_argentinos.csv`
+
+## 🤝 Contribuir
+
+¡Ayudanos a encontrar más streamers argentinos! Reportá canales faltantes via Issues.
+"""
+
+# =============================================================================
+# FUNCIÓN PRINCIPAL
 # =============================================================================
 
 def main():
-    """Función principal de ejecución"""
+    """Función principal"""
     try:
         # Verificar configuración
-        config = ConfiguracionProyecto()
-        
-        if not config.YOUTUBE_API_KEY:
-            print("❌ ERROR: Variable YOUTUBE_API_KEY no configurada")
-            print("Configura tu API key: export YOUTUBE_API_KEY='tu_api_key'")
+        if not Config.YOUTUBE_API_KEY and HAS_YOUTUBE_API:
+            print("❌ ERROR: YOUTUBE_API_KEY no configurada")
+            print("Configura tu API key:")
+            print("  export YOUTUBE_API_KEY='tu_api_key'")
+            print("\nO ejecuta en modo simulación sin la dependencia de Google")
             return
         
-        # Crear directorios necesarios
-        config.crear_directorios()
+        # Crear archivos de configuración si no existen
+        github_action_file = Path('.github/workflows/streaming_search.yml')
+        if not github_action_file.exists():
+            github_action_file.parent.mkdir(parents=True, exist_ok=True)
+            github_action_file.write_text(create_github_action())
+            print("✅ Archivo GitHub Action creado")
         
-        # Inicializar motor de búsqueda
-        motor = MotorBusquedaStreaming()
+        readme_file = Path('README.md')
+        if not readme_file.exists():
+            readme_file.write_text(create_readme())
+            print("✅ README.md creado")
         
-        # Ejecutar día completo
-        resultados = motor.ejecutar_dia_completo()
+        # Ejecutar motor principal
+        engine = StreamingArgentinaEngine()
+        results = engine.run_daily_execution()
         
         print("\n" + "="*80)
-        print("🎯 CARTOGRAFÍA STREAMING ARGENTINO - EJECUCIÓN COMPLETADA")
-        print("="*80)
-        print(f"Fase ejecutada: {resultados['fase_ejecutada']}")
-        print(f"Streamers encontrados hoy: {resultados.get('streamers_encontrados', 0)}")
-        print(f"CSV actualizado: {config.CSV_FINAL}")
+        print("✅ EJECUCIÓN COMPLETADA")
+        print(f"📊 Streamers encontrados hoy: {results.get('streamers_found', 0)}")
+        print(f"📁 Datos guardados en: {Config.STREAMERS_CSV}")
         print("="*80)
         
     except KeyboardInterrupt:
         print("\n⚠️  Ejecución interrumpida por el usuario")
     except Exception as e:
-        print(f"❌ Error crítico: {e}")
+        print(f"\n❌ Error crítico: {e}")
         import traceback
         traceback.print_exc()
 
