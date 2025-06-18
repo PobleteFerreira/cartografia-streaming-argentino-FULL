@@ -15,7 +15,7 @@ data/backup/
 
 # PERMITIR específicamente el CSV final del proyecto
 # data/*.csv  ← COMENTADO para permitir el CSV principal
-!data/cartografia_streaming_argentino.csv
+!data/streamers_argentinos.csv
 
 # Logs
 logs/*.log
