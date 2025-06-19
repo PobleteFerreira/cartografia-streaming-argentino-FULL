@@ -964,77 +964,97 @@
                 const response = await fetch('./data/streamers_argentinos.csv');
                 const csvText = await response.text();
                 
-                // Parsear CSV
-                const lines = csvText.split('\n');
-                const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
-                
-                channelsData = lines.slice(1)
-                    .filter(line => line.trim()) // Filtrar líneas vacías
-                    .map(line => {
-                        // Parsear CSV considerando comillas y comas dentro de campos
-                        const values = [];
-                        let current = '';
-                        let inQuotes = false;
+                // Usar un parser más robusto para CSV con saltos de línea en los campos
+                function parseCSVAdvanced(csvText) {
+                    const lines = csvText.split('\n');
+                    const headers = lines[0].split(',').map(h => h.trim().replace(/\r/g, ''));
+                    const rows = [];
+                    
+                    let currentRow = [];
+                    let currentField = '';
+                    let inQuotes = false;
+                    let lineIndex = 1;
+                    
+                    while (lineIndex < lines.length) {
+                        const line = lines[lineIndex].replace(/\r/g, '');
                         
                         for (let i = 0; i < line.length; i++) {
                             const char = line[i];
+                            
                             if (char === '"') {
-                                inQuotes = !inQuotes;
+                                if (inQuotes && line[i + 1] === '"') {
+                                    // Comillas escapadas ""
+                                    currentField += '"';
+                                    i++; // Saltar la siguiente comilla
+                                } else {
+                                    // Inicio o fin de campo con comillas
+                                    inQuotes = !inQuotes;
+                                }
                             } else if (char === ',' && !inQuotes) {
-                                values.push(current.trim().replace(/^"|"$/g, ''));
-                                current = '';
+                                // Fin de campo
+                                currentRow.push(currentField.trim());
+                                currentField = '';
                             } else {
-                                current += char;
+                                currentField += char;
                             }
                         }
-                        values.push(current.trim().replace(/^"|"$/g, ''));
                         
-                        const channel = {};
-                        headers.forEach((header, index) => {
-                            let value = values[index] ? values[index].trim() : '';
-                            
-                            // Mapear nombres de columnas de tu CSV a los que usa el dashboard
-                            const fieldMap = {
-                                'canal_id': 'canal_id',
-                                'nombre_canal': 'nombre_canal',
-                                'categoria': 'categoria',
-                                'provincia': 'provincia',
-                                'ciudad': 'ciudad',
-                                'suscriptores': 'suscriptores',
-                                'certeza': 'certeza',
-                                'metodo_deteccion': 'metodo_deteccion',
-                                'indicadores_argentinidad': 'indicadores_argentinidad',
-                                'url': 'url',
-                                'fecha_deteccion': 'fecha_deteccion',
-                                'ultima_actividad': 'ultima_actividad',
-                                'tiene_streaming': 'tiene_streaming',
-                                'descripcion': 'descripcion',
-                                'pais_detectado': 'pais_detectado',
-                                'videos_analizados': 'videos_analizados'
-                            };
-                            
-                            const mappedField = fieldMap[header] || header;
-                            
-                            // Convertir tipos de datos
-                            if (mappedField === 'suscriptores' || mappedField === 'videos_analizados') {
-                                value = parseInt(value) || 0;
-                            } else if (mappedField === 'certeza') {
-                                value = parseFloat(value) || 0;
-                            } else if (mappedField === 'tiene_streaming') {
-                                value = value.toLowerCase() === 'true' || value === '1';
-                            }
-                            
-                            channel[mappedField] = value;
-                        });
+                        // Si estamos dentro de comillas, agregar salto de línea y continuar
+                        if (inQuotes) {
+                            currentField += '\n';
+                            lineIndex++;
+                            continue;
+                        }
                         
-                        return channel;
-                    })
-                    .filter(ch => ch.nombre_canal && ch.nombre_canal !== ''); // Filtrar canales sin nombre
+                        // Agregar el último campo de la línea
+                        currentRow.push(currentField.trim());
+                        
+                        // Si tenemos el número correcto de campos, procesar la fila
+                        if (currentRow.length === headers.length) {
+                            const rowObj = {};
+                            headers.forEach((header, index) => {
+                                rowObj[header] = currentRow[index] || '';
+                            });
+                            rows.push(rowObj);
+                        }
+                        
+                        // Resetear para la siguiente fila
+                        currentRow = [];
+                        currentField = '';
+                        lineIndex++;
+                    }
+                    
+                    return rows;
+                }
+                
+                const rawData = parseCSVAdvanced(csvText);
+                
+                // Procesar y limpiar los datos
+                channelsData = rawData.map(channel => {
+                    return {
+                        canal_id: channel.canal_id || '',
+                        nombre_canal: channel.nombre_canal || '',
+                        categoria: channel.categoria || 'Sin categoría',
+                        provincia: channel.provincia || '',
+                        ciudad: channel.ciudad || 'Ciudad no especificada',
+                        suscriptores: parseInt(channel.suscriptores) || 0,
+                        certeza: parseFloat(channel.certeza) || 0,
+                        metodo_deteccion: channel.metodo_deteccion || 'unknown',
+                        indicadores_argentinidad: channel.indicadores_argentinidad || '',
+                        url: channel.url || '',
+                        fecha_deteccion: channel.fecha_deteccion || '',
+                        ultima_actividad: channel.ultima_actividad || '',
+                        tiene_streaming: channel.tiene_streaming === 'True' || channel.tiene_streaming === 'true',
+                        descripcion: channel.descripcion || 'Sin descripción disponible',
+                        pais_detectado: channel.pais_detectado || '',
+                        videos_analizados: parseInt(channel.videos_analizados) || 0
+                    };
+                }).filter(ch => ch.nombre_canal && ch.nombre_canal !== '');
                 
                 filteredData = [...channelsData];
                 
                 console.log(`✅ Datos cargados exitosamente: ${channelsData.length} canales argentinos`);
-                console.log('📊 Muestra de datos:', channelsData[0]);
+                console.log('📊 Primeros 3 canales:', channelsData.slice(0, 3));
                 
                 // Re-inicializar con los nuevos datos
                 updateStats();
@@ -1051,18 +1071,18 @@
                     {
                         canal_id: "UC2zO2jZCDplwm8SVsXUcxCQ",
                         nombre_canal: "La 100",
-                        categoria: "Entretenimiento",
+                        categoria: "Charlas/Podcast",
                         provincia: "Santa Fe",
-                        ciudad: "Rosario",
+                        ciudad: "Por determinar",
                         suscriptores: 562000,
                         certeza: 100.0,
                         metodo_deteccion: "explicit_country",
                         indicadores_argentinidad: "menciona_argentina",
                         url: "https://youtube.com/channel/UC2zO2jZCDplwm8SVsXUcxCQ",
                         fecha_deteccion: "2025-06-18",
-                        ultima_actividad: "2014-02-21",
+                        ultima_actividad: "2014-02-21T18:13:18Z",
                         tiene_streaming: true,
-                        descripcion: "¡Bienvenidos al canal oficial de La100.com.ar en Youtube! Suscribite y mirá contenidos exclusivos cuando y donde quieras de El Club del Moro, No Esta Todo Dicho, Sarasa, Atardecer de un Día Agitado.",
+                        descripcion: "¡Bienvenidos al canal oficial de La100.com.ar en Youtube! Suscribite y mirá contenidos exclusivos cuando y donde quieras.",
                         pais_detectado: "Argentina",
                         videos_analizados: 5
                     },
@@ -1070,17 +1090,17 @@
                         canal_id: "UCFAiSCNaJnizLNIF1aSkQAQ",
                         nombre_canal: "Gran Hermano Argentina",
                         categoria: "Entretenimiento",
-                        provincia: "Buenos Aires",
-                        ciudad: "Buenos Aires",
+                        provincia: "Argentina",
+                        ciudad: "Por determinar",
                         suscriptores: 1570000,
                         certeza: 95.0,
                         metodo_deteccion: "explicit_country",
                         indicadores_argentinidad: "menciona_argentina",
                         url: "https://youtube.com/channel/UCFAiSCNaJnizLNIF1aSkQAQ",
                         fecha_deteccion: "2025-06-18",
-                        ultima_actividad: "2022-07-07",
+                        ultima_actividad: "2022-07-07T20:16:45Z",
                         tiene_streaming: true,
-                        descripcion: "¡Enterate de todo lo que pasa en la casa más famosa del país! 👁‍🗨 Mirá los programas acá",
+                        descripcion: "¡Enterate de todo lo que pasa en la casa más famosa del país! Mirá los programas acá",
                         pais_detectado: "Argentina",
                         videos_analizados: 5
                     }
