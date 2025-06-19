@@ -409,7 +409,11 @@
             </div>
         </div>
 
-        <div class="controls">
+    <div class="controls">
+    <input type="text" id="searchInput" class="search-box" placeholder="🔍 Buscar por nombre de canal o descripción...">
+    <button id="sortNameBtn" style="margin-left:10px;">Ordenar A-Z</button>
+    <button id="sortSubsBtn" style="margin-left:10px;">Suscriptores ↓</button>
+</div>
             <input type="text" id="searchInput" class="search-box" placeholder="🔍 Buscar por nombre de canal o descripción...">
         </div>
 
@@ -956,7 +960,21 @@
                 closeMethodology();
             }
         }
+// Ordenar por nombre de canal (A-Z)
+document.addEventListener('DOMContentLoaded', function() {
+    document.getElementById('sortNameBtn').addEventListener('click', function() {
+        filteredData.sort((a, b) => a.nombre_canal.localeCompare(b.nombre_canal, 'es', { sensitivity: 'base' }));
+        currentPage = 1;
+        renderTable();
+    });
 
+    // Ordenar por cantidad de suscriptores (mayor a menor)
+    document.getElementById('sortSubsBtn').addEventListener('click', function() {
+        filteredData.sort((a, b) => b.suscriptores - a.suscriptores);
+        currentPage = 1;
+        renderTable();
+    });
+});
         // Inicializar la aplicación
         function init() {
             updateStats();
