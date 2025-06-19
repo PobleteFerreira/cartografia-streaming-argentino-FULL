@@ -206,10 +206,7 @@
         }
 
         .charts-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
+            display: none;
         }
 
         .chart-container {
@@ -436,17 +433,6 @@
             </select>
         </div>
 
-        <div class="charts-grid">
-            <div class="chart-container">
-                <div class="chart-title">Canales por Provincia</div>
-                <canvas id="provinceChart"></canvas>
-            </div>
-            <div class="chart-container">
-                <div class="chart-title">Distribución de Suscriptores</div>
-                <canvas id="subscribersChart"></canvas>
-            </div>
-        </div>
-
         <div class="table-container">
             <table id="channelsTable">
                 <thead>
@@ -653,28 +639,36 @@
             populateFilters();
             setupEventListeners();
             renderTable();
-            renderCharts();
             updateLastUpdate();
         }
 
         function updateStats() {
             const total = channelsData.length;
-            const totalSubs = channelsData.reduce((sum, ch) => sum + ch.suscriptores, 0);
-            const avgCerteza = Math.round(channelsData.reduce((sum, ch) => sum + ch.certeza, 0) / total);
-            const provinces = new Set(channelsData.map(ch => ch.provincia)).size;
+            const totalSubs = channelsData.reduce((sum, ch) => sum + (ch.suscriptores || 0), 0);
+            const avgCerteza = channelsData.length > 0 ? 
+                channelsData.reduce((sum, ch) => sum + (ch.certeza || 0), 0) / total : 0;
+            const provinces = new Set(channelsData.map(ch => ch.provincia).filter(p => p && p !== '')).size;
+            const streaming = channelsData.filter(ch => ch.tiene_streaming === true).length;
 
             document.getElementById('totalChannels').textContent = total.toLocaleString();
-            document.getElementById('totalSubscribers').textContent = (totalSubs / 1000000).toFixed(1) + 'M';
-            document.getElementById('avgCerteza').textContent = avgCerteza + '%';
+            document.getElementById('totalSubscribers').textContent = 
+                totalSubs > 1000000 ? (totalSubs / 1000000).toFixed(1) + 'M' :
+                totalSubs > 1000 ? (totalSubs / 1000).toFixed(0) + 'K' : 
+                totalSubs.toLocaleString();
+            document.getElementById('avgCerteza').textContent = avgCerteza.toFixed(1) + '%';
             document.getElementById('totalProvinces').textContent = provinces;
         }
 
         function populateFilters() {
-            const provinces = [...new Set(channelsData.map(ch => ch.provincia))].sort();
-            const cities = [...new Set(channelsData.map(ch => ch.ciudad))].sort();
+            const provinces = [...new Set(channelsData.map(ch => ch.provincia).filter(p => p && p !== ''))].sort();
+            const cities = [...new Set(channelsData.map(ch => ch.ciudad).filter(c => c && c !== '' && c !== 'Por determinar'))].sort();
 
             const provinceSelect = document.getElementById('provinceFilter');
             const citySelect = document.getElementById('cityFilter');
+
+            // Limpiar opciones existentes (excepto la primera)
+            provinceSelect.innerHTML = '<option value="">Todas las provincias</option>';
+            citySelect.innerHTML = '<option value="">Todas las ciudades</option>';
 
             provinces.forEach(prov => {
                 const option = document.createElement('option');
@@ -757,23 +751,26 @@
                         <div class="channel-name">
                             <a href="${channel.url}" target="_blank" class="url-link">${channel.nombre_canal}</a>
                         </div>
-                        <small style="color: #7f8c8d;">Videos analizados: ${channel.videos_analizados}</small>
+                        <small style="color: #7f8c8d;">
+                            ${channel.categoria || 'Sin categoría'} • 
+                            Videos analizados: ${channel.videos_analizados || 0}
+                        </small>
                     </td>
                     <td>
                         <strong>${channel.provincia}</strong><br>
-                        <small>${channel.ciudad}</small>
+                        <small>${channel.ciudad || 'Ciudad no especificada'}</small>
                     </td>
-                    <td class="subscribers">${channel.suscriptores.toLocaleString()}</td>
+                    <td class="subscribers">${(channel.suscriptores || 0).toLocaleString()}</td>
                     <td>
                         <div style="display: flex; align-items: center; gap: 5px;">
                             <div style="width: 40px; height: 6px; background: #e0e6ed; border-radius: 3px; overflow: hidden;">
-                                <div style="width: ${channel.certeza}%; height: 100%; background: linear-gradient(90deg, #27ae60, #2ecc71);"></div>
+                                <div style="width: ${Math.min(100, channel.certeza || 0)}%; height: 100%; background: linear-gradient(90deg, #27ae60, #2ecc71);"></div>
                             </div>
-                            <span style="font-size: 0.9em; font-weight: bold;">${channel.certeza}%</span>
+                            <span style="font-size: 0.9em; font-weight: bold;">${(channel.certeza || 0).toFixed(1)}%</span>
                         </div>
                     </td>
                     <td>
-                        <span class="method-tag">${channel.metodo_deteccion.replace('_', ' ')}</span>
+                        <span class="method-tag">${(channel.metodo_deteccion || 'unknown').replace(/_/g, ' ')}</span>
                     </td>
                     <td>
                         <button class="expand-btn" onclick="toggleDescription('${descId}', '${rowId}')">
@@ -791,11 +788,29 @@
                 descRow.innerHTML = `
                     <td colspan="6">
                         <div class="description-content">
-                            <strong>Descripción del canal:</strong><br>
-                            ${channel.descripcion}<br><br>
-                            <strong>Indicadores de argentinidad:</strong> ${channel.indicadores_argentinidad}<br>
-                            <strong>País detectado:</strong> ${channel.pais_detectado}<br>
-                            <strong>Fecha de detección:</strong> ${new Date(channel.fecha_deteccion).toLocaleDateString('es-AR')}
+                            <strong>📺 Descripción del canal:</strong><br>
+                            ${channel.descripcion || 'Sin descripción disponible'}<br><br>
+                            
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px;">
+                                <div>
+                                    <strong>🇦🇷 Indicadores de argentinidad:</strong><br>
+                                    ${channel.indicadores_argentinidad || 'No especificado'}
+                                </div>
+                                <div>
+                                    <strong>🌍 País detectado:</strong><br>
+                                    ${channel.pais_detectado || 'No especificado'}
+                                </div>
+                                <div>
+                                    <strong>📅 Fecha de detección:</strong><br>
+                                    ${channel.fecha_deteccion ? new Date(channel.fecha_deteccion).toLocaleDateString('es-AR') : 'No especificada'}
+                                </div>
+                                <div>
+                                    <strong>🔴 Streaming:</strong><br>
+                                    ${channel.tiene_streaming ? '✅ Activo' : '❌ Inactivo'}
+                                </div>
+                            </div>
+                            
+                            ${channel.ultima_actividad ? `<br><strong>⏰ Última actividad:</strong> ${new Date(channel.ultima_actividad).toLocaleDateString('es-AR')}` : ''}
                         </div>
                     </td>
                 `;
@@ -945,45 +960,137 @@
         // Función para cargar datos desde CSV (para integración con GitHub)
         async function loadDataFromGitHub() {
             try {
-                // Esta URL se actualizará con tu repositorio real
+                // Cargar desde tu archivo CSV real
                 const response = await fetch('./data/streamers_argentinos.csv');
                 const csvText = await response.text();
                 
+                // Parsear CSV
                 const lines = csvText.split('\n');
-                const headers = lines[0].split(',').map(h => h.trim());
+                const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
                 
                 channelsData = lines.slice(1)
                     .filter(line => line.trim()) // Filtrar líneas vacías
                     .map(line => {
-                        const values = line.split(',');
+                        // Parsear CSV considerando comillas y comas dentro de campos
+                        const values = [];
+                        let current = '';
+                        let inQuotes = false;
+                        
+                        for (let i = 0; i < line.length; i++) {
+                            const char = line[i];
+                            if (char === '"') {
+                                inQuotes = !inQuotes;
+                            } else if (char === ',' && !inQuotes) {
+                                values.push(current.trim().replace(/^"|"$/g, ''));
+                                current = '';
+                            } else {
+                                current += char;
+                            }
+                        }
+                        values.push(current.trim().replace(/^"|"$/g, ''));
+                        
                         const channel = {};
                         headers.forEach((header, index) => {
                             let value = values[index] ? values[index].trim() : '';
                             
-                            // Convertir valores numéricos
-                            if (header === 'suscriptores' || header === 'certeza' || header === 'videos_analizados') {
+                            // Mapear nombres de columnas de tu CSV a los que usa el dashboard
+                            const fieldMap = {
+                                'canal_id': 'canal_id',
+                                'nombre_canal': 'nombre_canal',
+                                'categoria': 'categoria',
+                                'provincia': 'provincia',
+                                'ciudad': 'ciudad',
+                                'suscriptores': 'suscriptores',
+                                'certeza': 'certeza',
+                                'metodo_deteccion': 'metodo_deteccion',
+                                'indicadores_argentinidad': 'indicadores_argentinidad',
+                                'url': 'url',
+                                'fecha_deteccion': 'fecha_deteccion',
+                                'ultima_actividad': 'ultima_actividad',
+                                'tiene_streaming': 'tiene_streaming',
+                                'descripcion': 'descripcion',
+                                'pais_detectado': 'pais_detectado',
+                                'videos_analizados': 'videos_analizados'
+                            };
+                            
+                            const mappedField = fieldMap[header] || header;
+                            
+                            // Convertir tipos de datos
+                            if (mappedField === 'suscriptores' || mappedField === 'videos_analizados') {
                                 value = parseInt(value) || 0;
+                            } else if (mappedField === 'certeza') {
+                                value = parseFloat(value) || 0;
+                            } else if (mappedField === 'tiene_streaming') {
+                                value = value.toLowerCase() === 'true' || value === '1';
                             }
                             
-                            // Convertir booleanos
-                            if (header === 'tiene_streaming') {
-                                value = value.toLowerCase() === 'true';
-                            }
-                            
-                            channel[header] = value;
+                            channel[mappedField] = value;
                         });
+                        
                         return channel;
                     })
-                    .filter(ch => ch.nombre_canal); // Filtrar canales sin nombre
+                    .filter(ch => ch.nombre_canal && ch.nombre_canal !== ''); // Filtrar canales sin nombre
                 
                 filteredData = [...channelsData];
-                init();
                 
-                console.log(`✅ Datos cargados exitosamente: ${channelsData.length} canales`);
+                console.log(`✅ Datos cargados exitosamente: ${channelsData.length} canales argentinos`);
+                console.log('📊 Muestra de datos:', channelsData[0]);
+                
+                // Re-inicializar con los nuevos datos
+                updateStats();
+                populateFilters();
+                renderTable();
+                updateLastUpdate();
+                
             } catch (error) {
                 console.error('❌ Error cargando datos desde GitHub:', error);
-                console.log('📝 Usando datos de ejemplo...');
-                // Mantener datos de ejemplo si falla la carga
+                console.log('📝 Usando datos de ejemplo mientras se configura la conexión...');
+                
+                // Datos de ejemplo que coinciden con tu estructura
+                channelsData = [
+                    {
+                        canal_id: "UC2zO2jZCDplwm8SVsXUcxCQ",
+                        nombre_canal: "La 100",
+                        categoria: "Entretenimiento",
+                        provincia: "Santa Fe",
+                        ciudad: "Rosario",
+                        suscriptores: 562000,
+                        certeza: 100.0,
+                        metodo_deteccion: "explicit_country",
+                        indicadores_argentinidad: "menciona_argentina",
+                        url: "https://youtube.com/channel/UC2zO2jZCDplwm8SVsXUcxCQ",
+                        fecha_deteccion: "2025-06-18",
+                        ultima_actividad: "2014-02-21",
+                        tiene_streaming: true,
+                        descripcion: "¡Bienvenidos al canal oficial de La100.com.ar en Youtube! Suscribite y mirá contenidos exclusivos cuando y donde quieras de El Club del Moro, No Esta Todo Dicho, Sarasa, Atardecer de un Día Agitado.",
+                        pais_detectado: "Argentina",
+                        videos_analizados: 5
+                    },
+                    {
+                        canal_id: "UCFAiSCNaJnizLNIF1aSkQAQ",
+                        nombre_canal: "Gran Hermano Argentina",
+                        categoria: "Entretenimiento",
+                        provincia: "Buenos Aires",
+                        ciudad: "Buenos Aires",
+                        suscriptores: 1570000,
+                        certeza: 95.0,
+                        metodo_deteccion: "explicit_country",
+                        indicadores_argentinidad: "menciona_argentina",
+                        url: "https://youtube.com/channel/UCFAiSCNaJnizLNIF1aSkQAQ",
+                        fecha_deteccion: "2025-06-18",
+                        ultima_actividad: "2022-07-07",
+                        tiene_streaming: true,
+                        descripcion: "¡Enterate de todo lo que pasa en la casa más famosa del país! 👁‍🗨 Mirá los programas acá",
+                        pais_detectado: "Argentina",
+                        videos_analizados: 5
+                    }
+                ];
+                
+                filteredData = [...channelsData];
+                updateStats();
+                populateFilters();
+                renderTable();
+                updateLastUpdate();
             }
         }
 
