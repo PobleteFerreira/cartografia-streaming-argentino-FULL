@@ -724,18 +724,29 @@ class YouTubeClient:
         return False
 
     def _call_with_rotation(self, func, *args, **kwargs):
-        while True:
+        """Llamada con rotación mejorada - DETIENE cuando todas las APIs están agotadas"""
+        attempts = 0
+        max_attempts = len(self.api_keys)
+        
+        while attempts < max_attempts:
             try:
                 return func(*args, **kwargs)
             except HttpError as e:
                 if hasattr(e, 'resp') and e.resp.status == 403 and 'quotaExceeded' in str(e):
                     self.logger.error("❌ Cuota agotada para la clave actual.")
                     if self._rotate_key():
+                        attempts += 1
                         continue
                     else:
-                        raise e
+                        # Todas las APIs agotadas
+                        self.logger.error("🛑 TODAS LAS APIS AGOTADAS - Esperando hasta mañana")
+                        raise Exception("Todas las APIs han agotado su cuota diaria")
                 else:
                     raise e
+        
+        # Si llegamos aquí, todas las APIs están agotadas
+        self.logger.error("🛑 TODAS LAS APIS AGOTADAS - Esperando hasta mañana")
+        raise Exception("Todas las APIs han agotado su cuota diaria")
 
     def can_make_request(self, cost: int) -> bool:
         """Verificar si se puede hacer una request sin exceder límites"""
@@ -1516,44 +1527,62 @@ class StreamingArgentinaEngine:
 # =============================================================================
 
 def create_github_action() -> str:
-    """Crear archivo GitHub Action para automatización de 120 días"""
-    return """name: Cartografía Streaming Argentino - 120 Días
-
+    """Crear archivo GitHub Action - COMPATIBLE CON TU WORKFLOW EXISTENTE"""
+    return """name: Ejecución Diaria - Cartografía Streaming Argentino
 on:
   schedule:
-    - cron: '0 8 * * *'  # 8 AM UTC (5 AM Argentina) - TODOS LOS DÍAS
+    # Ejecutar todos los días a las 02:00 UTC (23:00 Argentina)
+    - cron: '0 2 * * *'
   workflow_dispatch:
 
 jobs:
-  search-streamers:
+  execute_daily_search:
     runs-on: ubuntu-latest
-    
     steps:
-    - uses: actions/checkout@v3
-    
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.9'
-    
-    - name: Install dependencies
-      run: |
-        pip install google-api-python-client
-    
-    - name: Run streamer search
-      env:
-        YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
-        API_KEY_2: ${{ secrets.API_KEY_2 }}
-      run: |
-        python main.py
-    
-    - name: Commit and push results
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action Bot"
-        git add data/ cache/ logs/
-        git diff --quiet && git diff --staged --quiet || git commit -m "🎯 Day $(date +'%j'): Phase $(($(date +'%j') % 4 + 1)) - $(date +'%Y-%m-%d')"
-        git push
+      - name: Checkout código
+        uses: actions/checkout@v4
+        
+      - name: Setup Python 3.9
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+          cache: 'pip'
+          
+      - name: Instalar dependencias
+        run: |
+          pip install --upgrade pip
+          pip install google-api-python-client
+          # pip install -r requirements.txt  # Si tienes requirements.txt
+          # python -m spacy download es_core_news_sm  # Si usas spaCy
+          
+      - name: Crear directorios necesarios
+        run: |
+          mkdir -p data logs cache
+          
+      - name: Ejecutar búsqueda diaria
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          API_KEY_2: ${{ secrets.API_KEY_2 }}
+        run: |
+          python main.py
+          
+      - name: Subir resultados como artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: resultados-${{ github.run_id }}
+          path: |
+            data/streamers_argentinos.csv
+            logs/streaming_*.log
+            cache/quota_tracker.json
+          retention-days: 30
+          
+      - name: Commit y push de resultados (si hay cambios)
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/ cache/ logs/
+          git diff --staged --quiet || git commit -m "🎯 Día $(date +'%j'): Fase $(($(date +'%j') % 4 + 1)) - $(date +'%Y-%m-%d') - Streamers reales detectados"
+          git push || echo "No hay cambios para commitear"
 """
 
 def create_readme() -> str:
