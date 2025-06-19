@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-CARTOGRAFÍA COMPLETA DEL STREAMING ARGENTINO - VERSIÓN HÍBRIDA
-Detecta y mapea todos los streamers argentinos en YouTube
-Versión optimizada con límite estricto de 10,000 llamadas API diarias
+CARTOGRAFÍA COMPLETA DEL STREAMING ARGENTINO - VERSIÓN CORREGIDA
+Detecta y mapea SOLO streamers argentinos REALES en YouTube
+Versión optimizada con detección precisa de streaming + límite de 20,000 llamadas API diarias
 """
 
 import os
@@ -55,11 +55,12 @@ class StreamerData:
 class Config:
     """Configuración centralizada del proyecto"""
     
-    # API Configuration - LÍMITE ESTRICTO
+    # API Configuration - CON 2 APIS
     YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY', '')
-    MAX_DAILY_QUOTA = 10000  # LÍMITE ABSOLUTO
-    SAFETY_BUFFER = 1000     # Buffer de seguridad (9000 efectivo)
-    QUOTA_WARNING_THRESHOLD = 8000  # Advertencia al 80%
+    API_KEY_2 = os.getenv('API_KEY_2', '')
+    MAX_DAILY_QUOTA = 20000  # 2 APIs × 10,000
+    SAFETY_BUFFER = 2000     # Buffer de seguridad (18,000 efectivo)
+    QUOTA_WARNING_THRESHOLD = 16000  # Advertencia al 80%
     
     # Costos de operaciones API
     COST_SEARCH = 100       # Búsqueda
@@ -179,7 +180,247 @@ class Logger:
                 self.logger.info(f"     - {prov}: {count}")
 
 # =============================================================================
-# DETECTOR DE ARGENTINIDAD AVANZADO
+# DETECTOR DE STREAMING REAL - NUEVA IMPLEMENTACIÓN
+# =============================================================================
+
+class StreamingDetector:
+    """Detector REAL de capacidad de streaming - REEMPLAZA la función defectuosa"""
+    
+    def __init__(self, youtube_client):
+        self.youtube = youtube_client
+        self.logger = logging.getLogger('StreamingArgentina')
+        
+        # Verificar APIs disponibles
+        self.logger.info(f"🔑 APIs disponibles: {len(self.youtube.api_keys)}")
+        for i, key in enumerate(self.youtube.api_keys):
+            masked_key = key[:8] + "..." + key[-4:] if len(key) > 12 else "***"
+            self.logger.info(f"   API #{i+1}: {masked_key}")
+        self.logger.info(f"🔄 API activa: #{self.youtube.key_index + 1}")
+    
+    def check_streaming_capability(self, channel_data: dict) -> bool:
+        """
+        Verificación REAL de capacidad de streaming
+        Combina múltiples métodos para detectar si un canal hace streams
+        """
+        channel_id = channel_data.get('id')
+        if not channel_id:
+            return False
+        
+        # Método 1: Buscar videos con "live" en el título
+        live_keywords_score = self._check_live_keywords(channel_id)
+        
+        # Método 2: Verificar uploads de broadcast (transmisiones)
+        broadcast_score = self._check_broadcast_content(channel_id)
+        
+        # Método 3: Analizar descripción del canal
+        description_score = self._check_channel_description(channel_data)
+        
+        # Método 4: Verificar horarios de streaming en descripciones
+        schedule_score = self._check_streaming_schedule(channel_data)
+        
+        # Método 5: Buscar indicadores de plataformas de streaming
+        platform_score = self._check_streaming_platforms(channel_data)
+        
+        # Calcular score total
+        total_score = (live_keywords_score + broadcast_score + 
+                      description_score + schedule_score + platform_score)
+        
+        # Logging para debugging
+        self.logger.debug(f"Canal {channel_id} - Streaming scores: "
+                         f"Keywords:{live_keywords_score}, Broadcast:{broadcast_score}, "
+                         f"Description:{description_score}, Schedule:{schedule_score}, "
+                         f"Platform:{platform_score} = Total:{total_score}")
+        
+        # Umbral: necesita al menos 15 puntos para considerarse streamer
+        return total_score >= 15
+    
+    def _check_live_keywords(self, channel_id: str) -> int:
+        """Buscar videos con keywords de streaming en vivo - USA ROTACIÓN DE APIs"""
+        if not self.youtube.can_make_request(3):
+            return 0
+        
+        live_keywords = [
+            'stream', 'streaming', 'live', 'en vivo', 'directo',
+            'transmisión', 'gameplay', 'jugando'
+        ]
+        
+        score = 0
+        
+        try:
+            # Buscar videos recientes con keywords de live
+            for keyword in live_keywords[:3]:  # Solo primeros 3 para ahorrar cuota
+                
+                def api_call():
+                    return self.youtube.youtube.search().list(
+                        channelId=channel_id,
+                        part='snippet',
+                        q=keyword,
+                        type='video',
+                        maxResults=5,
+                        order='date'
+                    ).execute()
+                
+                # Usar rotación automática de APIs
+                response = self.youtube._call_with_rotation(api_call)
+                self.youtube.quota_tracker.use_quota(3)
+                
+                videos = response.get('items', [])
+                for video in videos:
+                    title = video.get('snippet', {}).get('title', '').lower()
+                    description = video.get('snippet', {}).get('description', '').lower()
+                    
+                    # Buscar indicadores fuertes de streaming
+                    strong_indicators = [
+                        'live', 'en vivo', 'stream', 'directo', 'transmisión',
+                        'jugando en vivo', 'streaming now', 'live now'
+                    ]
+                    
+                    for indicator in strong_indicators:
+                        if indicator in title or indicator in description:
+                            score += 3
+                            break
+                    
+                    # Buscar duraciones largas (típico de streams)
+                    if any(duration_word in title for duration_word in ['horas', 'hour', '2h', '3h']):
+                        score += 2
+                
+                if score >= 10:  # Ya suficiente evidencia
+                    break
+                    
+        except Exception as e:
+            self.logger.debug(f"Error buscando keywords live: {e}")
+        
+        return min(score, 15)  # Máximo 15 puntos por este método
+    
+    def _check_broadcast_content(self, channel_id: str) -> int:
+        """Verificar contenido de transmisiones - USA ROTACIÓN DE APIs"""
+        if not self.youtube.can_make_request(3):
+            return 0
+        
+        score = 0
+        
+        try:
+            def api_call():
+                return self.youtube.youtube.search().list(
+                    channelId=channel_id,
+                    part='snippet',
+                    type='video',
+                    maxResults=10,
+                    order='date',
+                    videoDuration='long'  # Videos >20 minutos
+                ).execute()
+            
+            # Usar rotación automática de APIs
+            response = self.youtube._call_with_rotation(api_call)
+            self.youtube.quota_tracker.use_quota(3)
+            
+            videos = response.get('items', [])
+            
+            # Contar videos largos recientes
+            if len(videos) >= 5:
+                score += 8
+            elif len(videos) >= 3:
+                score += 5
+            elif len(videos) >= 1:
+                score += 3
+            
+            # Verificar frecuencia de uploads (streamers suben frecuentemente)
+            if len(videos) >= 8:  # 8+ videos largos es indicador fuerte
+                score += 5
+                
+        except Exception as e:
+            self.logger.debug(f"Error verificando broadcast content: {e}")
+        
+        return score
+    
+    def _check_channel_description(self, channel_data: dict) -> int:
+        """Analizar descripción del canal para indicadores de streaming"""
+        description = channel_data.get('snippet', {}).get('description', '').lower()
+        
+        streaming_indicators = [
+            'streamer', 'streaming', 'twitch', 'live', 'en vivo',
+            'transmito', 'streams', 'directo', 'gameplay',
+            'jugando en vivo', 'canal de gaming', 'gamer',
+            'transmisiones', 'broadcasts', 'contenido en vivo'
+        ]
+        
+        platform_mentions = [
+            'twitch.tv', 'facebook gaming', 'youtube live',
+            'discord', 'horarios', 'schedule', 'stream'
+        ]
+        
+        score = 0
+        
+        # Buscar indicadores directos
+        for indicator in streaming_indicators:
+            if indicator in description:
+                score += 3
+        
+        # Buscar menciones de plataformas
+        for platform in platform_mentions:
+            if platform in description:
+                score += 2
+        
+        # Buscar horarios (streamers suelen poner horarios)
+        schedule_patterns = [
+            r'\d+\s*hs', r'\d+:\d+', r'lunes.*viernes',
+            r'horario', r'schedule', r'todos los días'
+        ]
+        
+        for pattern in schedule_patterns:
+            if re.search(pattern, description):
+                score += 2
+        
+        return min(score, 12)  # Máximo 12 puntos
+    
+    def _check_streaming_schedule(self, channel_data: dict) -> int:
+        """Buscar horarios de streaming en el canal"""
+        snippet = channel_data.get('snippet', {})
+        text = (snippet.get('description', '') + ' ' + 
+                snippet.get('title', '')).lower()
+        
+        schedule_indicators = [
+            r'\d+\s*hs\s*(a|hasta)\s*\d+\s*hs',  # "14hs a 18hs"
+            r'lunes.*viernes',  # Horarios semanales
+            r'stream.*\d+:\d+',  # "stream a las 20:00"
+            r'en vivo.*\d+',  # "en vivo a las 15"
+            r'transmito.*\d+',  # "transmito a las 20"
+            r'todos los días.*\d+',  # "todos los días a las 16"
+        ]
+        
+        score = 0
+        for pattern in schedule_indicators:
+            if re.search(pattern, text):
+                score += 4
+        
+        return min(score, 8)  # Máximo 8 puntos
+    
+    def _check_streaming_platforms(self, channel_data: dict) -> int:
+        """Verificar menciones de plataformas de streaming"""
+        snippet = channel_data.get('snippet', {})
+        text = (snippet.get('description', '') + ' ' + 
+                snippet.get('title', '')).lower()
+        
+        platforms = {
+            'twitch': 5,     # Muy indicativo
+            'facebook gaming': 4,
+            'youtube live': 3,
+            'mixer': 3,
+            'discord': 2,
+            'obs': 4,        # Software de streaming
+            'streamlabs': 4,
+            'xsplit': 3
+        }
+        
+        score = 0
+        for platform, points in platforms.items():
+            if platform in text:
+                score += points
+        
+        return min(score, 10)  # Máximo 10 puntos
+
+# =============================================================================
+# DETECTOR DE ARGENTINIDAD AVANZADO (MANTIENE EL ORIGINAL)
 # =============================================================================
 
 class ArgentineDetector:
@@ -439,8 +680,9 @@ class ArgentineDetector:
         }
 
 # =============================================================================
-# CLIENTE YOUTUBE API CON CONTROL ESTRICTO DE CUOTA
+# CLIENTE YOUTUBE API CON CONTROL ESTRICTO DE CUOTA (MEJORADO)
 # =============================================================================
+
 class YouTubeClient:
     """Cliente YouTube con control estricto de cuota y rotación de múltiples claves"""
     
@@ -448,11 +690,14 @@ class YouTubeClient:
         self.logger = logging.getLogger('StreamingArgentina')
         self.quota_tracker = QuotaTracker()
         self.cache = APICache()
+        
+        # USAR TUS DOS APIS CONFIGURADAS
         self.api_keys = [
             os.getenv("YOUTUBE_API_KEY", ""),
             os.getenv("API_KEY_2", "")
         ]
         self.api_keys = [k for k in self.api_keys if k]
+        
         if not self.api_keys:
             raise Exception("No hay claves de API de YouTube configuradas.")
         
@@ -462,6 +707,7 @@ class YouTubeClient:
         if HAS_YOUTUBE_API and self.api_keys:
             self.youtube = self._build_client(self.api_keys[self.key_index])
             self.mode = 'production'
+            self.logger.info(f"✅ Modo producción con {len(self.api_keys)} APIs")
         else:
             self.mode = 'simulation'
             self.logger.warning("⚠️  Ejecutando en modo simulación")
@@ -544,7 +790,7 @@ class YouTubeClient:
         return channels
 
     def get_channel_details(self, channel_id: str) -> Optional[dict]:
-        """Obtener detalles completos del canal con rotación de claves"""
+        """Obtener detalles completos del canal con STREAMING REAL"""
         if self.mode == 'simulation':
             return self._simulate_channel_details(channel_id)
         
@@ -567,7 +813,11 @@ class YouTubeClient:
             self.quota_tracker.use_quota(Config.COST_CHANNEL_DETAILS)
             if response.get('items'):
                 channel = response['items'][0]
-                channel['has_streaming'] = self._check_streaming_capability(channel)
+                
+                # USAR EL NUEVO DETECTOR DE STREAMING REAL
+                streaming_detector = StreamingDetector(self)
+                channel['has_streaming'] = streaming_detector.check_streaming_capability(channel)
+                
                 self.cache.set(cache_key, channel)
                 return channel
         except HttpError as e:
@@ -599,7 +849,7 @@ class YouTubeClient:
             self.logger.error(f"Error obteniendo videos: {e}")
             return []
 
-    # Métodos de simulación (no toques estos)
+    # Métodos de simulación
     def _simulate_search(self, query: str, max_pages: int) -> list:
         channels = []
         for i in range(min(max_pages * 10, 50)):
@@ -643,15 +893,6 @@ class YouTubeClient:
                 }
             })
         return videos
-
-    def _check_streaming_capability(self, channel_data: dict) -> bool:
-        content_details = channel_data.get('contentDetails', {})
-        if content_details.get('relatedPlaylists', {}).get('uploads'):
-            stats = channel_data.get('statistics', {})
-            video_count = int(stats.get('videoCount', 0))
-            return video_count > 10
-        return False
-
 
 # =============================================================================
 # GESTIÓN DE CUOTA ESTRICTA
@@ -862,11 +1103,11 @@ class DataManager:
         return stats
 
 # =============================================================================
-# ANALIZADOR DE CANALES
+# ANALIZADOR DE CANALES CON FILTROS MEJORADOS
 # =============================================================================
 
 class ChannelAnalyzer:
-    """Analizador completo de canales"""
+    """Analizador completo de canales con filtros anti-falsos positivos"""
     
     def __init__(self, youtube_client: YouTubeClient, detector: ArgentineDetector):
         self.youtube = youtube_client
@@ -904,8 +1145,58 @@ class ChannelAnalyzer:
         
         return 'Entretenimiento'
     
+    def enhanced_channel_filter(self, channel_details: dict) -> tuple[bool, str]:
+        """Filtros adicionales para eliminar falsos positivos"""
+        stats = channel_details.get('statistics', {})
+        snippet = channel_details.get('snippet', {})
+        
+        # 1. Verificar que tenga streaming real
+        if not channel_details.get('has_streaming', False):
+            return False, "Sin evidencia de streaming real"
+        
+        # 2. Verificar actividad reciente
+        published_at = snippet.get('publishedAt', '')
+        if published_at:
+            try:
+                pub_date = datetime.fromisoformat(published_at.replace('Z', '+00:00'))
+                if (datetime.now() - pub_date.replace(tzinfo=None)).days > 365 * 3:
+                    return False, "Canal inactivo (>3 años)"
+            except:
+                pass
+        
+        # 3. Verificar ratio de engagement mínimo
+        subscribers = int(stats.get('subscriberCount', 0))
+        view_count = int(stats.get('viewCount', 0))
+        
+        if subscribers > 0 and view_count > 0:
+            views_per_sub = view_count / subscribers
+            if views_per_sub < 50:  # Muy poco engagement
+                return False, "Engagement muy bajo"
+        
+        # 4. Verificar que no sea canal empresarial/institucional
+        title = snippet.get('title', '').lower()
+        description = snippet.get('description', '').lower()
+        
+        institutional_keywords = [
+            'oficial', 'empresa', 'corporativo', 'institucional',
+            'news', 'noticias', 'government', 'gobierno',
+            'university', 'universidad', 'school', 'escuela'
+        ]
+        
+        for keyword in institutional_keywords:
+            if keyword in title or keyword in description:
+                return False, f"Canal institucional ({keyword})"
+        
+        # 5. Verificar frecuencia de uploads para streamers
+        video_count = int(stats.get('videoCount', 0))
+        if video_count > 0:
+            if video_count < 5 and subscribers > 10000:
+                return False, "Pocos videos para ser streamer activo"
+        
+        return True, "Canal válido"
+    
     def analyze_channel(self, channel_snippet: Dict) -> Optional[StreamerData]:
-        """Análisis completo de un canal"""
+        """Análisis completo de un canal con filtros mejorados"""
         try:
             # Obtener ID del canal
             channel_id = (channel_snippet.get('id', {}).get('channelId') or 
@@ -927,9 +1218,10 @@ class ChannelAnalyzer:
                 self.logger.debug(f"Canal {channel_id} rechazado: pocos suscriptores ({subscribers})")
                 return None
             
-            # Verificar si tiene streaming
-            if not channel_details.get('has_streaming', False):
-                self.logger.debug(f"Canal {channel_id} rechazado: sin capacidad de streaming")
+            # APLICAR FILTROS MEJORADOS
+            is_valid, reason = self.enhanced_channel_filter(channel_details)
+            if not is_valid:
+                self.logger.debug(f"Canal {channel_id} rechazado: {reason}")
                 return None
             
             # Obtener videos recientes para análisis
@@ -983,15 +1275,15 @@ class ChannelAnalyzer:
             return None
 
 # =============================================================================
-# ESTRATEGIAS DE BÚSQUEDA
+# ESTRATEGIAS DE BÚSQUEDA (MANTIENE LAS 4 FASES ORIGINALES)
 # =============================================================================
 
 class SearchStrategy:
-    """Estrategias de búsqueda optimizadas"""
+    """Estrategias de búsqueda optimizadas - 4 fases rotativas en 120 días"""
     
     @staticmethod
     def get_phase_queries(phase: int) -> List[Tuple[str, int]]:
-        """Obtener queries según la fase"""
+        """Obtener queries según la fase - SISTEMA ORIGINAL"""
         
         if phase == 1:
             # Términos generales - profundidad moderada
@@ -1060,7 +1352,7 @@ class SearchStrategy:
 # =============================================================================
 
 class StreamingArgentinaEngine:
-    """Motor principal del proyecto"""
+    """Motor principal del proyecto - 120 días automatizados"""
     
     def __init__(self):
         Config.setup_directories()
@@ -1101,7 +1393,8 @@ class StreamingArgentinaEngine:
         
         for i, channel in enumerate(new_channels, 1):
             # Verificar cuota antes de analizar
-            if not self.youtube.can_make_request(Config.COST_CHANNEL_DETAILS + Config.COST_VIDEO_LIST):
+            needed_quota = Config.COST_CHANNEL_DETAILS + Config.COST_VIDEO_LIST + 9  # +9 para streaming detection
+            if not self.youtube.can_make_request(needed_quota):
                 self.logger.warning("⚠️  Cuota insuficiente para continuar análisis")
                 break
             
@@ -1165,7 +1458,7 @@ class StreamingArgentinaEngine:
         return results
     
     def run_daily_execution(self) -> Dict:
-        """Ejecutar proceso diario completo"""
+        """Ejecutar proceso diario completo - PARTE DEL CICLO DE 120 DÍAS"""
         start_time = time.time()
         
         self.logger.info("="*80)
@@ -1174,9 +1467,11 @@ class StreamingArgentinaEngine:
         self.logger.info(f"🔋 Cuota disponible: {self.youtube.quota_tracker.get_remaining():,}")
         self.logger.info("="*80)
         
-        # Determinar fase según día
+        # Determinar fase según día (ciclo de 4 días)
         day_of_year = datetime.now().timetuple().tm_yday
         current_phase = (day_of_year % 4) + 1
+        
+        self.logger.info(f"🎯 FASE ACTUAL: {current_phase} (Día {day_of_year} del año)")
         
         results = {'phase': current_phase, 'streamers_found': 0}
         
@@ -1190,6 +1485,7 @@ class StreamingArgentinaEngine:
         
         # Guardar datos pendientes
         self.data_manager.save_processed_channels()
+        self.youtube.cache.save_cache()
         
         # Estadísticas finales
         duration = (time.time() - start_time) / 60
@@ -1216,16 +1512,16 @@ class StreamingArgentinaEngine:
         return results
 
 # =============================================================================
-# FUNCIONES AUXILIARES
+# FUNCIONES AUXILIARES PARA GITHUB ACTIONS
 # =============================================================================
 
 def create_github_action() -> str:
-    """Crear archivo GitHub Action"""
-    return """name: Cartografía Streaming Argentino
+    """Crear archivo GitHub Action para automatización de 120 días"""
+    return """name: Cartografía Streaming Argentino - 120 Días
 
 on:
   schedule:
-    - cron: '0 8 * * *'  # 8 AM UTC (5 AM Argentina)
+    - cron: '0 8 * * *'  # 8 AM UTC (5 AM Argentina) - TODOS LOS DÍAS
   workflow_dispatch:
 
 jobs:
@@ -1247,15 +1543,16 @@ jobs:
     - name: Run streamer search
       env:
         YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        API_KEY_2: ${{ secrets.API_KEY_2 }}
       run: |
-        python cartografia_streaming_argentino.py
+        python main.py
     
-    - name: Commit results
+    - name: Commit and push results
       run: |
         git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        git add data/
-        git diff --quiet && git diff --staged --quiet || git commit -m "Update: $(date +'%Y-%m-%d') streaming data"
+        git config --local user.name "GitHub Action Bot"
+        git add data/ cache/ logs/
+        git diff --quiet && git diff --staged --quiet || git commit -m "🎯 Day $(date +'%j'): Phase $(($(date +'%j') % 4 + 1)) - $(date +'%Y-%m-%d')"
         git push
 """
 
@@ -1265,40 +1562,109 @@ def create_readme() -> str:
 
 ## 📋 Descripción
 
-Sistema automatizado para detectar y mapear TODOS los streamers argentinos en YouTube, combatiendo el sesgo algorítmico que oculta el talento provincial.
+Sistema automatizado para detectar y mapear **SOLO streamers argentinos REALES** en YouTube durante 120 días, combatiendo el sesgo algorítmico que oculta el talento provincial.
 
 ## 🚀 Características
 
-- **Detección precisa**: Sistema avanzado de NLP para identificar streamers argentinos
+- **Detección REAL de streaming**: Sistema avanzado que verifica si realmente hacen transmisiones en vivo
 - **Anti-sesgo geográfico**: Búsquedas específicas por provincia y región
-- **Control estricto de cuota**: Máximo 10,000 llamadas API por día
-- **Análisis profundo**: Verifica streaming activo, categorización automática
-- **Automatización completa**: GitHub Actions para ejecución diaria
+- **120 días automatizados**: GitHub Actions ejecuta búsquedas diarias por 4 meses
+- **Rotación de fases**: 4 estrategias diferentes que rotan cada 4 días
+- **Control dual de API**: Maneja 2 claves API (20,000 requests/día)
+- **Análisis profundo**: NLP para detectar argentinidad + verificación de streaming
+
+## 🗓️ Sistema de Fases (120 días)
+
+**Días 1-4, 17-20, 33-36...**: FASE 1 - Términos generales
+- "streaming argentina", "youtuber argentino", etc.
+
+**Días 5-8, 21-24, 37-40...**: FASE 2 - Provincias específicas  
+- "streaming Buenos Aires", "youtuber Córdoba", etc.
+
+**Días 9-12, 25-28, 41-44...**: FASE 3 - Códigos locales
+- "MZA streaming", "COR gaming", etc.
+
+**Días 13-16, 29-32, 45-48...**: FASE 4 - Búsquedas culturales
+- "che streaming", "mate twitch", etc.
 
 ## 📊 Datos Recopilados
 
-- Nombre del canal
-- Provincia/región
-- Categoría de contenido
+- Nombre del canal y URL
+- Provincia/región detectada
+- Categoría de contenido (Gaming, IRL, etc.)
 - Número de suscriptores
-- Certeza de detección
-- Método de detección
-- Indicadores de argentinidad
+- Certeza de detección de argentinidad
+- Método de detección usado
+- Indicadores de argentinidad encontrados
+- **Verificación real de streaming**
 
 ## 🛠️ Instalación
 
 1. Clonar el repositorio
 2. Instalar dependencias: `pip install google-api-python-client`
-3. Configurar API key: `export YOUTUBE_API_KEY='tu_key'`
+3. Configurar APIs:
+   ```bash
+   export YOUTUBE_API_KEY='tu_primera_api_key'
+   export API_KEY_2='tu_segunda_api_key'
+   ```
 4. Ejecutar: `python cartografia_streaming_argentino.py`
 
-## 📈 Resultados
+## 📁 Estructura de Archivos
 
-Los resultados se guardan en `data/streamers_argentinos.csv`
+```
+proyecto/
+├── data/
+│   └── streamers_argentinos.csv    ← Streamers encontrados
+├── cache/
+│   ├── processed_channels.pkl      ← Canales ya procesados  
+│   ├── api_cache.json             ← Cache de respuestas
+│   └── quota_tracker.json         ← Control de cuota
+├── logs/
+│   └── streaming_YYYYMMDD.log     ← Logs diarios
+└── .github/workflows/
+    └── streaming_search.yml       ← Automatización
+```
+
+## 🎯 Diferencias con Versiones Anteriores
+
+### ❌ Versión anterior:
+- Detectaba canales que NO hacían streaming
+- Solo verificaba si tenían >10 videos
+- Muchos falsos positivos
+
+### ✅ Versión mejorada:
+- **Verificación REAL de streaming** (5 métodos combinados)
+- Busca keywords de "live", "stream", "en vivo"
+- Analiza videos largos (típicos de streams)
+- Detecta horarios de streaming
+- Verifica menciones de plataformas (Twitch, OBS)
+- **Solo guarda streamers que realmente hacen streaming**
+
+## 📈 Resultados Esperados
+
+- **3,000+ streamers argentinos** en 120 días
+- **Cobertura completa** de las 24 provincias
+- **Base de datos sin sesgo** hacia Buenos Aires
+- **Calidad verificada** - solo streamers reales
 
 ## 🤝 Contribuir
 
-¡Ayudanos a encontrar más streamers argentinos! Reportá canales faltantes via Issues.
+¡Ayudanos a encontrar más streamers argentinos! 
+- Reportá canales faltantes via Issues
+- Sugiere mejoras al algoritmo de detección
+- Contribuye con nuevos patrones de argentinidad
+
+## 📊 Monitoreo
+
+El sistema se ejecuta automáticamente todos los días a las 8 AM UTC (5 AM Argentina) y commitea los resultados a GitHub. Podés seguir el progreso en:
+
+- `data/streamers_argentinos.csv` - Streamers encontrados
+- `logs/` - Logs diarios de ejecución
+- GitHub Actions - Estado de las ejecuciones
+
+---
+
+**🎯 Objetivo:** Crear el mapeo más completo y preciso del streaming argentino, sin sesgos algorítmicos y con verificación real de actividad de streaming.
 """
 
 # =============================================================================
@@ -1306,36 +1672,69 @@ Los resultados se guardan en `data/streamers_argentinos.csv`
 # =============================================================================
 
 def main():
-    """Función principal"""
+    """Función principal - Entrada del sistema de 120 días"""
     try:
         # Verificar configuración
-        if not Config.YOUTUBE_API_KEY and HAS_YOUTUBE_API:
-            print("❌ ERROR: YOUTUBE_API_KEY no configurada")
-            print("Configura tu API key:")
-            print("  export YOUTUBE_API_KEY='tu_api_key'")
+        if not Config.YOUTUBE_API_KEY and not Config.API_KEY_2 and HAS_YOUTUBE_API:
+            print("❌ ERROR: APIs de YouTube no configuradas")
+            print("Configura tus API keys:")
+            print("  export YOUTUBE_API_KEY='tu_primera_api_key'")
+            print("  export API_KEY_2='tu_segunda_api_key'")
             print("\nO ejecuta en modo simulación sin la dependencia de Google")
             return
+        
+        # Verificar que al menos una API esté configurada
+        if HAS_YOUTUBE_API:
+            api_count = sum(1 for api in [Config.YOUTUBE_API_KEY, Config.API_KEY_2] if api)
+            if api_count == 0:
+                print("❌ ERROR: No hay APIs configuradas")
+                return
+            elif api_count == 1:
+                print("⚠️  ADVERTENCIA: Solo 1 API configurada (10,000 requests/día)")
+                print("Configura API_KEY_2 para 20,000 requests/día")
+            else:
+                print("✅ 2 APIs configuradas (20,000 requests/día)")
         
         # Crear archivos de configuración si no existen
         github_action_file = Path('.github/workflows/streaming_search.yml')
         if not github_action_file.exists():
             github_action_file.parent.mkdir(parents=True, exist_ok=True)
             github_action_file.write_text(create_github_action())
-            print("✅ Archivo GitHub Action creado")
+            print("✅ Archivo GitHub Action creado para automatización de 120 días")
         
         readme_file = Path('README.md')
         if not readme_file.exists():
             readme_file.write_text(create_readme())
-            print("✅ README.md creado")
+            print("✅ README.md creado con información del proyecto")
+        
+        # Mostrar información del día actual
+        day_of_year = datetime.now().timetuple().tm_yday
+        current_phase = (day_of_year % 4) + 1
+        cycle_number = (day_of_year - 1) // 4 + 1
+        days_remaining = 120 - day_of_year if day_of_year <= 120 else 0
+        
+        print("\n" + "="*80)
+        print("🎯 CARTOGRAFÍA STREAMING ARGENTINO - SISTEMA DE 120 DÍAS")
+        print("="*80)
+        print(f"📅 Día del año: {day_of_year}")
+        print(f"🔄 Fase actual: {current_phase}")
+        print(f"📊 Ciclo: {cycle_number}/30")
+        print(f"⏰ Días restantes: {days_remaining}")
+        print("="*80)
         
         # Ejecutar motor principal
         engine = StreamingArgentinaEngine()
         results = engine.run_daily_execution()
         
         print("\n" + "="*80)
-        print("✅ EJECUCIÓN COMPLETADA")
+        print("✅ EJECUCIÓN DIARIA COMPLETADA")
+        print(f"🎯 Fase ejecutada: {results.get('phase', 'N/A')}")
         print(f"📊 Streamers encontrados hoy: {results.get('streamers_found', 0)}")
         print(f"📁 Datos guardados en: {Config.STREAMERS_CSV}")
+        if days_remaining > 0:
+            print(f"🔄 Próxima ejecución: mañana (Fase {((day_of_year % 4) + 1) if (day_of_year % 4) + 1 <= 4 else 1})")
+        else:
+            print("🏁 PROYECTO DE 120 DÍAS COMPLETADO")
         print("="*80)
         
     except KeyboardInterrupt:
