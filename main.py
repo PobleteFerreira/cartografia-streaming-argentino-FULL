@@ -3,6 +3,7 @@
 CARTOGRAFÍA COMPLETA DEL STREAMING ARGENTINO - VERSIÓN CORREGIDA
 Detecta y mapea SOLO streamers argentinos REALES en YouTube
 Versión optimizada con detección precisa de streaming + límite de 20,000 llamadas API diarias
+CORRECCIÓN: Manejo de APIs agotadas para evitar bucle infinito
 """
 
 import os
@@ -206,6 +207,11 @@ class StreamingDetector:
         if not channel_id:
             return False
         
+        # VERIFICAR SI LAS APIs ESTÁN AGOTADAS ANTES DE CONTINUAR
+        if getattr(self.youtube, 'all_apis_exhausted', False):
+            self.logger.warning("⚠️ APIs agotadas - Saltando verificación de streaming")
+            return True  # Asumir que sí hace streaming si no podemos verificar
+        
         # Método 1: Buscar videos con "live" en el título
         live_keywords_score = self._check_live_keywords(channel_id)
         
@@ -237,6 +243,10 @@ class StreamingDetector:
     def _check_live_keywords(self, channel_id: str) -> int:
         """Buscar videos con keywords de streaming en vivo - USA ROTACIÓN DE APIs"""
         if not self.youtube.can_make_request(3):
+            return 0
+        
+        # VERIFICAR SI LAS APIs ESTÁN AGOTADAS
+        if getattr(self.youtube, 'all_apis_exhausted', False):
             return 0
         
         live_keywords = [
@@ -288,6 +298,9 @@ class StreamingDetector:
                     break
                     
         except Exception as e:
+            if "Todas las APIs han agotado su cuota diaria" in str(e):
+                self.logger.warning("⚠️ APIs agotadas durante verificación de keywords")
+                return 0
             self.logger.debug(f"Error buscando keywords live: {e}")
         
         return min(score, 15)  # Máximo 15 puntos por este método
@@ -295,6 +308,10 @@ class StreamingDetector:
     def _check_broadcast_content(self, channel_id: str) -> int:
         """Verificar contenido de transmisiones - USA ROTACIÓN DE APIs"""
         if not self.youtube.can_make_request(3):
+            return 0
+        
+        # VERIFICAR SI LAS APIs ESTÁN AGOTADAS
+        if getattr(self.youtube, 'all_apis_exhausted', False):
             return 0
         
         score = 0
@@ -329,6 +346,9 @@ class StreamingDetector:
                 score += 5
                 
         except Exception as e:
+            if "Todas las APIs han agotado su cuota diaria" in str(e):
+                self.logger.warning("⚠️ APIs agotadas durante verificación de broadcast")
+                return 0
             self.logger.debug(f"Error verificando broadcast content: {e}")
         
         return score
@@ -703,6 +723,9 @@ class YouTubeClient:
         
         self.key_index = 0
         self.youtube = None
+        
+        # NUEVA VARIABLE PARA RASTREAR SI TODAS LAS APIs ESTÁN AGOTADAS
+        self.all_apis_exhausted = False
 
         if HAS_YOUTUBE_API and self.api_keys:
             self.youtube = self._build_client(self.api_keys[self.key_index])
@@ -710,7 +733,7 @@ class YouTubeClient:
             self.logger.info(f"✅ Modo producción con {len(self.api_keys)} APIs")
         else:
             self.mode = 'simulation'
-            self.logger.warning("⚠️  Ejecutando en modo simulación")
+            self.logger.warning("⚠️ Ejecutando en modo simulación")
 
     def _build_client(self, api_key):
         return build('youtube', 'v3', developerKey=api_key)
@@ -724,7 +747,11 @@ class YouTubeClient:
         return False
 
     def _call_with_rotation(self, func, *args, **kwargs):
-        """Llamada con rotación mejorada - DETIENE cuando todas las APIs están agotadas"""
+        """Llamada con rotación mejorada - MARCA CUANDO TODAS LAS APIs ESTÁN AGOTADAS"""
+        # VERIFICAR SI YA SABEMOS QUE TODAS ESTÁN AGOTADAS
+        if self.all_apis_exhausted:
+            raise Exception("Todas las APIs han agotado su cuota diaria")
+        
         attempts = 0
         max_attempts = len(self.api_keys)
         
@@ -732,20 +759,26 @@ class YouTubeClient:
             try:
                 return func(*args, **kwargs)
             except HttpError as e:
-                if hasattr(e, 'resp') and e.resp.status == 403 and 'quotaExceeded' in str(e):
+                if (hasattr(e, 'resp') and e.resp.status == 403 and 
+                    'quotaExceeded' in str(e)):
+                    
+                    self.logger.warning(f"Encountered 403 Forbidden with reason \"quotaExceeded\"")
                     self.logger.error("❌ Cuota agotada para la clave actual.")
+                    
                     if self._rotate_key():
                         attempts += 1
                         continue
                     else:
                         # Todas las APIs agotadas
                         self.logger.error("🛑 TODAS LAS APIS AGOTADAS - Esperando hasta mañana")
+                        self.all_apis_exhausted = True  # MARCAR COMO AGOTADAS
                         raise Exception("Todas las APIs han agotado su cuota diaria")
                 else:
                     raise e
         
         # Si llegamos aquí, todas las APIs están agotadas
         self.logger.error("🛑 TODAS LAS APIS AGOTADAS - Esperando hasta mañana")
+        self.all_apis_exhausted = True
         raise Exception("Todas las APIs han agotado su cuota diaria")
 
     def can_make_request(self, cost: int) -> bool:
@@ -754,6 +787,10 @@ class YouTubeClient:
 
     def search_channels(self, query: str, max_pages: int = 5) -> list:
         """Buscar canales con paginación controlada y rotación de claves"""
+        # VERIFICAR SI LAS APIs YA ESTÁN AGOTADAS
+        if self.all_apis_exhausted:
+            raise Exception("Todas las APIs han agotado su cuota diaria")
+        
         if self.mode == 'simulation':
             return self._simulate_search(query, max_pages)
         
@@ -762,7 +799,7 @@ class YouTubeClient:
 
         for page in range(max_pages):
             if not self.can_make_request(Config.COST_SEARCH):
-                self.logger.warning(f"⚠️  Cuota insuficiente para continuar búsqueda")
+                self.logger.warning(f"⚠️ Cuota insuficiente para continuar búsqueda")
                 break
 
             cache_key = f"search_{query}_{page}"
@@ -795,6 +832,9 @@ class YouTubeClient:
                 self.logger.error(f"Error en búsqueda: {e}")
                 break
             except Exception as e:
+                # PROPAGAR LA EXCEPCIÓN DE APIs AGOTADAS
+                if "Todas las APIs han agotado su cuota diaria" in str(e):
+                    raise e
                 self.logger.error(f"Error inesperado: {e}")
                 break
         
@@ -802,6 +842,9 @@ class YouTubeClient:
 
     def get_channel_details(self, channel_id: str) -> Optional[dict]:
         """Obtener detalles completos del canal con STREAMING REAL"""
+        if self.all_apis_exhausted:
+            raise Exception("Todas las APIs han agotado su cuota diaria")
+        
         if self.mode == 'simulation':
             return self._simulate_channel_details(channel_id)
         
@@ -833,10 +876,17 @@ class YouTubeClient:
                 return channel
         except HttpError as e:
             self.logger.error(f"Error obteniendo canal {channel_id}: {e}")
+        except Exception as e:
+            if "Todas las APIs han agotado su cuota diaria" in str(e):
+                raise e
+            self.logger.error(f"Error inesperado: {e}")
         return None
 
     def get_recent_videos(self, channel_id: str, max_videos: int = 5) -> list:
         """Obtener videos recientes para análisis con rotación de claves"""
+        if self.all_apis_exhausted:
+            raise Exception("Todas las APIs han agotado su cuota diaria")
+        
         if self.mode == 'simulation':
             return self._simulate_recent_videos(channel_id, max_videos)
         
@@ -858,6 +908,11 @@ class YouTubeClient:
             return response.get('items', [])
         except HttpError as e:
             self.logger.error(f"Error obteniendo videos: {e}")
+            return []
+        except Exception as e:
+            if "Todas las APIs han agotado su cuota diaria" in str(e):
+                raise e
+            self.logger.error(f"Error inesperado: {e}")
             return []
 
     # Métodos de simulación
@@ -1282,6 +1337,8 @@ class ChannelAnalyzer:
             return streamer
             
         except Exception as e:
+            if "Todas las APIs han agotado su cuota diaria" in str(e):
+                raise e  # PROPAGAR LA EXCEPCIÓN DE APIs AGOTADAS
             self.logger.error(f"Error analizando canal: {e}")
             return None
 
@@ -1359,7 +1416,7 @@ class SearchStrategy:
             ]
 
 # =============================================================================
-# MOTOR PRINCIPAL
+# MOTOR PRINCIPAL (CON CORRECCIONES)
 # =============================================================================
 
 class StreamingArgentinaEngine:
@@ -1378,12 +1435,29 @@ class StreamingArgentinaEngine:
         
         self.channels_analyzed_today = 0
         self.streamers_found_today = 0
+        
+        # NUEVA VARIABLE PARA CONTROLAR APIs AGOTADAS
+        self.apis_exhausted = False
     
     def process_search_term(self, term: str, max_pages: int) -> int:
         """Procesar un término de búsqueda"""
         self.logger.info(f"🔍 Buscando: '{term}' (máx {max_pages} páginas)")
         
-        channels = self.youtube.search_channels(term, max_pages)
+        # VERIFICAR SI LAS APIs YA ESTÁN AGOTADAS
+        if self.apis_exhausted:
+            self.logger.warning(f"⚠️ Saltando '{term}' - APIs agotadas")
+            return 0
+        
+        try:
+            channels = self.youtube.search_channels(term, max_pages)
+        except Exception as e:
+            if "Todas las APIs han agotado su cuota diaria" in str(e):
+                self.logger.error("🛑 APIs AGOTADAS - Deteniendo todas las búsquedas")
+                self.apis_exhausted = True  # MARCAR COMO AGOTADAS
+                return 0
+            else:
+                self.logger.error(f"Error en búsqueda: {e}")
+                return 0
         
         if not channels:
             self.logger.warning(f"No se encontraron canales para '{term}'")
@@ -1403,16 +1477,30 @@ class StreamingArgentinaEngine:
         streamers_found = 0
         
         for i, channel in enumerate(new_channels, 1):
+            # VERIFICAR APIs AGOTADAS ANTES DE ANALIZAR
+            if self.apis_exhausted:
+                self.logger.warning("⚠️ Deteniendo análisis - APIs agotadas")
+                break
+            
             # Verificar cuota antes de analizar
-            needed_quota = Config.COST_CHANNEL_DETAILS + Config.COST_VIDEO_LIST + 9  # +9 para streaming detection
+            needed_quota = Config.COST_CHANNEL_DETAILS + Config.COST_VIDEO_LIST + 9
             if not self.youtube.can_make_request(needed_quota):
-                self.logger.warning("⚠️  Cuota insuficiente para continuar análisis")
+                self.logger.warning("⚠️ Cuota insuficiente para continuar análisis")
                 break
             
             self.channels_analyzed_today += 1
             
-            # Analizar canal
-            streamer = self.analyzer.analyze_channel(channel)
+            # Analizar canal CON MANEJO DE EXCEPCIÓN
+            try:
+                streamer = self.analyzer.analyze_channel(channel)
+            except Exception as e:
+                if "Todas las APIs han agotado su cuota diaria" in str(e):
+                    self.logger.error("🛑 APIs AGOTADAS durante análisis - Deteniendo")
+                    self.apis_exhausted = True
+                    break
+                else:
+                    self.logger.error(f"Error analizando canal: {e}")
+                    continue
             
             if streamer:
                 # Guardar streamer
@@ -1447,10 +1535,15 @@ class StreamingArgentinaEngine:
         }
         
         for query, max_pages in queries:
+            # VERIFICAR APIs AGOTADAS ANTES DE CADA QUERY
+            if self.apis_exhausted:
+                self.logger.warning("⚠️ Deteniendo fase - APIs agotadas")
+                break
+            
             # Verificar cuota disponible
-            min_quota_needed = Config.COST_SEARCH * 2  # Al menos 2 búsquedas
+            min_quota_needed = Config.COST_SEARCH * 2
             if not self.youtube.can_make_request(min_quota_needed):
-                self.logger.warning("⚠️  Cuota insuficiente para continuar fase")
+                self.logger.warning("⚠️ Cuota insuficiente para continuar fase")
                 break
             
             try:
@@ -1458,12 +1551,18 @@ class StreamingArgentinaEngine:
                 results['queries_processed'] += 1
                 results['streamers_found'] += found
                 
+                # SALIR SI LAS APIs SE AGOTARON DURANTE LA BÚSQUEDA
+                if self.apis_exhausted:
+                    break
+                
                 # Pausa entre búsquedas
                 time.sleep(1)
                 
             except Exception as e:
                 self.logger.error(f"Error procesando '{query}': {e}")
-                if "Cuota diaria agotada" in str(e):
+                if ("Cuota diaria agotada" in str(e) or 
+                    "Todas las APIs han agotado su cuota diaria" in str(e)):
+                    self.apis_exhausted = True
                     break
         
         return results
