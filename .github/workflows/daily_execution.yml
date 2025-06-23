@@ -3,7 +3,7 @@ name: Ejecución Diaria - Cartografía Streaming Argentino
 on:
   schedule:
     # Ejecutar todos los días a las 02:00 UTC (23:00 Argentina)
-    - cron: '0 2 * * *'
+    - cron: '0 2  * * *'
   workflow_dispatch:
 
 jobs:
