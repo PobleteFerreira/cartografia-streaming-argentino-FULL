@@ -1134,9 +1134,9 @@ def main():
         print(f"📊 Ciclo: {cycle_number}/30")
         print(f"⏰ Días restantes: {days_remaining}")
         print("="*80)
-        if day_of_year > 30:
-            print("🏁 PROYECTO DE 30 DÍAS COMPLETADO")
-            return
+        #if day_of_year > 30:
+         #   print("🏁 PROYECTO DE 30 DÍAS COMPLETADO")
+          #  return
         engine = StreamingArgentinaEngine()
         results = engine.run_daily_execution()
         print("\n" + "="*80)
