@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CARTOGRAFÍA STREAMING ARGENTINO - Versión avanzada y optimizada para larga duración
+CARTOGRAFÍA STREAMING ARGENTINO - Versión avanzada, robusta y segura de cuotas
 """
 import os
 import json
@@ -134,19 +134,12 @@ class Logger:
             for prov, count in provincias[:5]:
                 self.logger.info(f"     - {prov}: {count}")
 
-# --- (Aquí irían todas las clases del script original, sin recortar nada) ---
-# Puedes copiar todo el bloque de clases desde tu main.py original aquí, incluyendo:
-# - ArgentineDetector
-# - StreamingDetector
-# - YouTubeClient
-# - QuotaTracker
-# - APICache
-# - DataManager
-# - ChannelAnalyzer
-# - SearchStrategy
-# (No los vuelvo a pegar aquí para no saturar la pantalla, pero puedes tomar TODO tal como está en tu main.py actual hasta justo antes de la función main())
+# --- CLASES AVANZADAS DEL PROYECTO (no modifiques) ---
+# Pega aquí tus clases: ArgentineDetector, StreamingDetector, YouTubeClient, QuotaTracker, APICache, DataManager, ChannelAnalyzer, SearchStrategy
+# Si las tienes en otros archivos, solo importa aquí. Si están aquí, déjalas igual que en tu main.py anterior.
+# (Por razones de espacio y claridad, asumo que ya las tienes bien en tu main.py o en imports)
 
-# --- ENGINE AJUSTADO PARA LARGA DURACIÓN Y MENOR CONSUMO ---
+# --- ENGINE AJUSTADO PARA LARGA DURACIÓN, CUIDADO DE CUOTA Y SIN BUCLES ---
 class StreamingArgentinaEngine:
     def __init__(self):
         Config.setup_directories()
@@ -160,20 +153,24 @@ class StreamingArgentinaEngine:
         self.streamers_found_today = 0
         self.apis_exhausted = False
         # AJUSTA AQUÍ LOS LÍMITES SEGÚN TU NECESIDAD PARA MÁS DÍAS:
-        self.max_pages_per_query = 3      # Menos páginas por término
-        self.max_channels_per_term = 25   # Menos canales nuevos por término por día
+        self.max_pages_per_query = 2      # Menos páginas por término
+        self.max_channels_per_term = 15   # Menos canales nuevos por término por día
         self.max_videos_per_channel = 5   # Mantén profundidad de análisis
 
     def process_search_term(self, term: str, max_pages: int) -> int:
-        self.logger.info(f"🔍 Buscando: '{term}' (máx {max_pages} páginas)")
         if self.apis_exhausted:
             self.logger.warning(f"⚠️ Saltando '{term}' - APIs agotadas")
             return 0
         try:
             channels = self.youtube.search_channels(term, max_pages)
         except Exception as e:
-            self.logger.error(f"Error en búsqueda: {e}")
-            return 0
+            if "Cuota diaria agotada" in str(e) or "Todas las APIs han agotado su cuota diaria" in str(e):
+                self.logger.error("🛑 APIs AGOTADAS - Deteniendo todas las búsquedas")
+                self.apis_exhausted = True
+                return 0
+            else:
+                self.logger.error(f"Error en búsqueda: {e}")
+                return 0
         if not channels:
             self.logger.warning(f"No se encontraron canales para '{term}'")
             return 0
@@ -189,7 +186,6 @@ class StreamingArgentinaEngine:
             if self.apis_exhausted:
                 self.logger.warning("⚠️ Deteniendo análisis - APIs agotadas")
                 break
-            # Mantén el análisis avanzado y toda la lógica de tu ChannelAnalyzer
             streamer = self.analyzer.analyze_channel(channel)
             if streamer:
                 self.data_manager.save_streamer(streamer)
@@ -220,6 +216,9 @@ class StreamingArgentinaEngine:
         current_phase = (day_of_year % 4) + 1
         queries = SearchStrategy.get_phase_queries(current_phase)
         for query, max_pages in queries:
+            if self.apis_exhausted:
+                self.logger.warning("⚠️ APIs agotadas - Deteniendo ejecución del día")
+                break
             self.process_search_term(query, min(max_pages, self.max_pages_per_query))
         self.data_manager.save_processed_channels()
         self.youtube.cache.save_cache()
