@@ -69,9 +69,9 @@ class Config:
     COST_VIDEO_LIST = 3     # Lista de videos
     
     # Límites optimizados para no exceder cuota
-    MAX_PAGES_PER_SEARCH = 2  # Solo 2 páginas por búsqueda
+    MAX_PAGES_PER_SEARCH = 3  # Solo 2 páginas por búsqueda
     MAX_RESULTS_PER_PAGE = 25  # 25 resultados por página
-    MAX_CHANNELS_PER_DAY = 150  # Máximo canales a analizar por día
+    MAX_CHANNELS_PER_DAY = 300  # Máximo canales a analizar por día
     
     # Filtros ajustados
     MIN_SUBSCRIBERS = 500  # Mínimo de suscriptores
