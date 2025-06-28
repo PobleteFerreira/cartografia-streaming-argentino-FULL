@@ -106,7 +106,39 @@ class Config:
         "Mar del Plata", "Salta", "Santa Fe", "San Juan", "Resistencia",
         "Neuquén", "Corrientes", "Posadas", "Bahía Blanca", "Paraná"
     }
-    
+    # Códigos argentinos para detección
+    CODIGOS_ARGENTINOS = {
+        'CABA': 'Ciudad Autónoma de Buenos Aires',
+        'BSAS': 'Buenos Aires', 
+        'BA': 'Buenos Aires',
+        'CORDOBA': 'Córdoba',
+        'CBA': 'Córdoba',
+        'MENDOZA': 'Mendoza',
+        'MDZ': 'Mendoza',
+        'ROSARIO': 'Santa Fe',
+        'SANTA FE': 'Santa Fe',
+        'TUCUMAN': 'Tucumán',
+        'SALTA': 'Salta',
+        'MISIONES': 'Misiones',
+        'CHACO': 'Chaco',
+        'CORRIENTES': 'Corrientes',
+        'ENTRE RIOS': 'Entre Ríos',
+        'FORMOSA': 'Formosa',
+        'JUJUY': 'Jujuy',
+        'LA PAMPA': 'La Pampa',
+        'LA RIOJA': 'La Rioja',
+        'NEUQUEN': 'Neuquén',
+        'RIO NEGRO': 'Río Negro',
+        'SAN JUAN': 'San Juan',
+        'SAN LUIS': 'San Luis',
+        'SANTA CRUZ': 'Santa Cruz',
+        'SANTIAGO DEL ESTERO': 'Santiago del Estero',
+        'TIERRA DEL FUEGO': 'Tierra del Fuego',
+        'CHUBUT': 'Chubut',
+        'ARGENTINA': 'Argentina',
+        'ARG': 'Argentina',
+        'AR': 'Argentina'
+    }
     @classmethod
     def setup_directories(cls):
         """Crear directorios necesarios"""
