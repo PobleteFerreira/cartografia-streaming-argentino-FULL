@@ -1167,7 +1167,7 @@ class DataManager:
     
     def save_channel(self, data: StreamerData):
         """Guardar canal en CSV"""
-        file_path = Path("streamers_argentinos.csv")
+        file_path = Path("/data/streamers_argentinos.csv")
         file_exists = file_path.exists()
         canal_id = data.canal_id
         
