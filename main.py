@@ -1117,8 +1117,6 @@ class APICache:
 # =============================================================================
 
 class DataManager:
-    """Gestión de datos y archivos"""
-    
     def __init__(self):
         self.logger = logging.getLogger('StreamingArgentina')
         self.processed_channels = self.load_processed_channels()
@@ -1167,36 +1165,40 @@ class DataManager:
         if len(self.processed_channels) % 50 == 0:
             self.save_state()
     
-def save_channel(self, data: StreamerData):
-    file_exists = Config.streamers_argentinos.csv.exists()
-    canal_id = data.canal_id
-
-    # Leer IDs existentes solo si el archivo existe, para evitar duplicados (aunque ya estén en memoria)
-    ids_existentes = set()
-    if file_exists:
-        with open(Config.streamers_argentinos.csv, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                ids_existentes.add(row['canal_id'])
-
-    if canal_id in ids_existentes:
-        # Ya existe, no lo guardamos de nuevo
-        return
-
-    with open(Config.streamers_argentinos.csv, 'a', newline='', encoding='utf-8') as f:
-        fieldnames = [
-            'canal_id', 'nombre_canal', 'categoria', 'provincia', 'ciudad',
-            'suscriptores', 'certeza', 'metodo_deteccion', 'indicadores_argentinidad',
-            'url', 'fecha_deteccion', 'ultima_actividad', 'tiene_streaming',
-            'descripcion', 'pais_detectado', 'videos_analizados'
-        ]
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        if not file_exists:
-            writer.writeheader()
-        row = asdict(data)
-        row['indicadores_argentinidad'] = ', '.join(row['indicadores_argentinidad'])
-        row['descripcion'] = row['descripcion'][:500]  # Limitar longitud
-        writer.writerow(row)
+    def save_channel(self, data: StreamerData):
+        """Guardar canal en CSV"""
+        file_path = Path("streamers_argentinos.csv")
+        file_exists = file_path.exists()
+        canal_id = data.canal_id
+        
+        # Leer IDs existentes solo si el archivo existe, para evitar duplicados
+        ids_existentes = set()
+        if file_exists:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    ids_existentes.add(row['canal_id'])
+        
+        if canal_id in ids_existentes:
+            # Ya existe, no lo guardamos de nuevo
+            return
+        
+        with open(file_path, 'a', newline='', encoding='utf-8') as f:
+            fieldnames = [
+                'canal_id', 'nombre_canal', 'categoria', 'provincia', 'ciudad',
+                'suscriptores', 'certeza', 'metodo_deteccion', 'indicadores_argentinidad',
+                'url', 'fecha_deteccion', 'ultima_actividad', 'tiene_streaming',
+                'descripcion', 'pais_detectado', 'videos_analizados'
+            ]
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            
+            if not file_exists:
+                writer.writeheader()
+            
+            row = asdict(data)
+            row['indicadores_argentinidad'] = ', '.join(row['indicadores_argentinidad'])
+            row['descripcion'] = row['descripcion'][:500]  # Limitar longitud
+            writer.writerow(row)
 
 # =============================================================================
 # PROCESADOR PRINCIPAL OPTIMIZADO
