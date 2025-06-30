@@ -1168,13 +1168,13 @@ class DataManager:
             self.save_state()
     
 def save_channel(self, data: StreamerData):
-    file_exists = Config.STREAMERS_CSV.exists()
+    file_exists = Config.streamers_argentinos.csv.exists()
     canal_id = data.canal_id
 
     # Leer IDs existentes solo si el archivo existe, para evitar duplicados (aunque ya estén en memoria)
     ids_existentes = set()
     if file_exists:
-        with open(Config.STREAMERS_CSV, 'r', encoding='utf-8') as f:
+        with open(Config.streamers_argentinos.csv, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
                 ids_existentes.add(row['canal_id'])
@@ -1183,7 +1183,7 @@ def save_channel(self, data: StreamerData):
         # Ya existe, no lo guardamos de nuevo
         return
 
-    with open(Config.STREAMERS_CSV, 'a', newline='', encoding='utf-8') as f:
+    with open(Config.streamers_argentinos.csv, 'a', newline='', encoding='utf-8') as f:
         fieldnames = [
             'canal_id', 'nombre_canal', 'categoria', 'provincia', 'ciudad',
             'suscriptores', 'certeza', 'metodo_deteccion', 'indicadores_argentinidad',
