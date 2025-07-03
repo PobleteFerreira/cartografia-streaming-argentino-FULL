@@ -60,17 +60,11 @@ jobs:
           exit 1
         fi
     
-    - name: 🤖 Process manual channels
-      env:
-        YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
-        API_KEY_2: ${{ secrets.API_KEY_2 }}
+    - name: 📝 Create processing script
       run: |
-        echo "🚀 Iniciando procesamiento de canales manuales..."
-        echo "📅 Fecha: $(date)"
-        
-        # Ejecutar script sin confirmación interactiva
-        python -c "
+        cat > process_channels.py << 'EOF'
 import sys
+import os
 sys.path.insert(0, '.')
 
 # Importar y ejecutar sin input manual
@@ -78,7 +72,6 @@ from add_manual_channels import ManualChannelProcessor, load_channel_ids_from_fi
 from pathlib import Path
 
 # Configurar API key desde environment
-import os
 if os.getenv('YOUTUBE_API_KEY'):
     Config.YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY')
 
@@ -89,7 +82,7 @@ if Path('CANALES ARGENTINOS FINALES.xlsx').exists():
     print(f'📋 {len(channel_ids)} canales cargados')
     
     # Limitar canales si se especifica
-    max_channels = '${{ github.event.inputs.max_channels }}'
+    max_channels = os.getenv('MAX_CHANNELS', '')
     if max_channels and max_channels.isdigit():
         channel_ids = channel_ids[:int(max_channels)]
         print(f'🔢 Limitado a {len(channel_ids)} canales')
@@ -99,11 +92,23 @@ if Path('CANALES ARGENTINOS FINALES.xlsx').exists():
     processor = ManualChannelProcessor(channel_ids)
     results = processor.process_all_channels()
     
-    print(f'✅ Completado: {results[\"added\"]} añadidos, {results[\"rejected\"]} rechazados')
+    print(f'✅ Completado: {results["added"]} añadidos, {results["rejected"]} rechazados')
 else:
     print('❌ Archivo Excel no encontrado')
     sys.exit(1)
-        "
+EOF
+
+    - name: 🤖 Process manual channels
+      env:
+        YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        API_KEY_2: ${{ secrets.API_KEY_2 }}
+        MAX_CHANNELS: ${{ github.event.inputs.max_channels }}
+      run: |
+        echo "🚀 Iniciando procesamiento de canales manuales..."
+        echo "📅 Fecha: $(date)"
+        
+        # Ejecutar script de procesamiento
+        python process_channels.py
     
     - name: 📊 Check results
       id: check_results
