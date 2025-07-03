@@ -1,16 +1,15 @@
 name: 📝 Procesar Canales Manuales
 
 on:
-  # Ejecutar solo manualmente
   workflow_dispatch:
     inputs:
       confirm:
-        description: '¿Confirmas el procesamiento? (escribe "si" para continuar)'
+        description: 'Confirmar procesamiento (escribe "si")'
         required: true
         default: 'no'
         type: string
       max_channels:
-        description: 'Máximo de canales a procesar (opcional, deja vacío para todos)'
+        description: 'Máximo canales a procesar (vacío = todos)'
         required: false
         default: ''
         type: string
@@ -18,197 +17,90 @@ on:
 jobs:
   process-manual-channels:
     runs-on: ubuntu-latest
-    
-    # Solo ejecutar si se confirma
     if: github.event.inputs.confirm == 'si'
     
     steps:
-    - name: 🚀 Checkout repository
+    - name: 🚀 Checkout
       uses: actions/checkout@v4
     
-    - name: 🐍 Set up Python
+    - name: 🐍 Setup Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.9'
     
     - name: 📦 Install dependencies
       run: |
-        python -m pip install --upgrade pip
         pip install google-api-python-client openpyxl
     
     - name: 📁 Create directories
-      run: |
-        mkdir -p data logs cache
-        echo "Directorios creados correctamente"
+      run: mkdir -p data logs cache
     
     - name: 🔍 Check files
       run: |
-        echo "📋 Archivos disponibles:"
+        echo "Verificando archivos necesarios..."
         ls -la
+        test -f "CANALES ARGENTINOS FINALES.xlsx" || { echo "ERROR: Excel no encontrado"; exit 1; }
+        test -f "add_manual_channels.py" || { echo "ERROR: Script no encontrado"; exit 1; }
+        test -f "main.py" || { echo "ERROR: main.py no encontrado"; exit 1; }
+        echo "Todos los archivos encontrados"
+    
+    - name: 🔧 Prepare script
+      run: |
+        # Crear versión automática del script
+        cp add_manual_channels.py auto_process.py
         
-        if [ -f "CANALES ARGENTINOS FINALES.xlsx" ]; then
-          echo "✅ Archivo Excel encontrado"
-        else
-          echo "❌ Archivo Excel NO encontrado"
-          exit 1
-        fi
+        # Modificar para que no pida confirmación
+        sed -i 's/response = input.*/response = "y"/' auto_process.py
         
-        if [ -f "add_manual_channels.py" ]; then
-          echo "✅ Script de procesamiento encontrado"
-        else
-          echo "❌ Script de procesamiento NO encontrado"
-          exit 1
+        # Añadir límite de canales si se especifica
+        if [ -n "${{ github.event.inputs.max_channels }}" ]; then
+          sed -i '/channel_ids = load_channel_ids_from_file/a\\n        # Limitar canales\n        if len(channel_ids) > ${{ github.event.inputs.max_channels }}:\n            channel_ids = channel_ids[:${{ github.event.inputs.max_channels }}]\n            print(f"🔢 Limitado a {len(channel_ids)} canales")' auto_process.py
         fi
     
-    - name: 🤖 Process manual channels
+    - name: 🤖 Process channels
       env:
         YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
-        API_KEY_2: ${{ secrets.API_KEY_2 }}
-        MAX_CHANNELS: ${{ github.event.inputs.max_channels }}
       run: |
-        echo "🚀 Iniciando procesamiento de canales manuales..."
-        echo "📅 Fecha: $(date)"
-        
-        # Crear script temporal
-        cat > temp_process.py << 'ENDSCRIPT'
-import sys
-import os
-sys.path.insert(0, '.')
-
-try:
-    from add_manual_channels import ManualChannelProcessor, load_channel_ids_from_file, Config
-    from pathlib import Path
-    
-    if os.getenv('YOUTUBE_API_KEY'):
-        Config.YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY')
-    
-    print('Buscando archivo Excel...')
-    if Path('CANALES ARGENTINOS FINALES.xlsx').exists():
-        print('Cargando canales desde Excel...')
-        channel_ids = load_channel_ids_from_file('CANALES ARGENTINOS FINALES.xlsx')
-        print(f'Canales cargados: {len(channel_ids)}')
-        
-        max_channels = os.getenv('MAX_CHANNELS', '')
-        if max_channels and max_channels.isdigit():
-            channel_ids = channel_ids[:int(max_channels)]
-            print(f'Limitado a: {len(channel_ids)} canales')
-        
-        print('Iniciando procesamiento...')
-        processor = ManualChannelProcessor(channel_ids)
-        results = processor.process_all_channels()
-        
-        print(f'Completado: {results["added"]} añadidos, {results["rejected"]} rechazados')
-    else:
-        print('ERROR: Archivo Excel no encontrado')
-        sys.exit(1)
-        
-except Exception as e:
-    print(f'ERROR: {e}')
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
-ENDSCRIPT
-        
-        # Ejecutar el script
-        python temp_process.py
+        echo "Iniciando procesamiento..."
+        echo "Fecha: $(date)"
+        python auto_process.py
     
     - name: 📊 Check results
-      id: check_results
       run: |
         if [ -f "data/streamers_argentinos.csv" ]; then
           lines=$(wc -l < data/streamers_argentinos.csv)
-          echo "csv_lines=$lines" >> $GITHUB_OUTPUT
-          echo "✅ CSV actualizado con $lines líneas"
-          
-          # Mostrar últimas líneas añadidas
-          echo "📋 Últimos canales añadidos:"
-          tail -n 5 data/streamers_argentinos.csv | while read line; do
-            echo "   $line"
-          done
+          echo "CSV generado con $lines líneas"
         else
-          echo "❌ No se generó el archivo CSV"
-          echo "csv_lines=0" >> $GITHUB_OUTPUT
+          echo "ERROR: CSV no generado"
+          exit 1
         fi
     
-    - name: 📈 Generate summary
-      run: |
-        echo "## 📊 Resumen del Procesamiento" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**Fecha:** $(date)" >> $GITHUB_STEP_SUMMARY
-        
-        if [ -f "data/streamers_argentinos.csv" ]; then
-          lines=$(wc -l < data/streamers_argentinos.csv)
-          echo "**Total en CSV:** $lines líneas" >> $GITHUB_STEP_SUMMARY
-        fi
-        
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### 📁 Archivos generados:" >> $GITHUB_STEP_SUMMARY
-        echo "- 📄 CSV: \`data/streamers_argentinos.csv\`" >> $GITHUB_STEP_SUMMARY
-        echo "- 📜 Logs: Disponibles en artifacts" >> $GITHUB_STEP_SUMMARY
-        
-        # Buscar logs recientes
-        if [ -d "logs" ] && [ "$(ls -A logs)" ]; then
-          latest_log=$(ls -t logs/*.log | head -n 1)
-          if [ -f "$latest_log" ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### 📝 Últimas líneas del log:" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            tail -n 10 "$latest_log" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          fi
-        fi
-    
-    - name: 💾 Commit and push results
-      if: steps.check_results.outputs.csv_lines != '0'
+    - name: 💾 Save results
       run: |
         git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action Bot"
-        
-        # Añadir archivos generados
-        git add data/streamers_argentinos.csv || true
+        git config --local user.name "GitHub Action"
+        git add data/ || true
         git add cache/ || true
         git add logs/ || true
         
-        # Commit solo si hay cambios
         if ! git diff --staged --quiet; then
-          channels_processed="${{ github.event.inputs.max_channels }}"
-          if [ -z "$channels_processed" ]; then
-            channels_processed="todos"
-          fi
-          
-          git commit -m "🤖 Canales manuales procesados ($channels_processed) - $(date +'%Y-%m-%d %H:%M')"
+          git commit -m "🤖 Canales procesados - $(date +'%Y-%m-%d %H:%M')"
           git push
-          echo "✅ Cambios guardados en el repositorio"
+          echo "Resultados guardados"
         else
-          echo "ℹ️ No hay cambios nuevos para guardar"
+          echo "Sin cambios para guardar"
         fi
     
     - name: 📎 Upload artifacts
       if: always()
       uses: actions/upload-artifact@v3
       with:
-        name: processing-results-${{ github.run_id }}
+        name: processing-results
         path: |
           logs/
-          data/streamers_argentinos.csv
-          cache/
-        retention-days: 30
-    
-    - name: ✅ Success notification
-      if: success()
-      run: |
-        echo "🎉 ¡Procesamiento completado exitosamente!"
-        echo "📁 Los resultados están guardados en el repositorio"
-        echo "📊 Revisa el archivo 'data/streamers_argentinos.csv'"
-    
-    - name: ❌ Failure notification  
-      if: failure()
-      run: |
-        echo "💥 Hubo un error en el procesamiento"
-        echo "📜 Revisa los logs en los artifacts para más detalles"
-        echo "🔧 Verifica que la API key esté configurada correctamente"
+          data/
+        retention-days: 7
 
-  # Job que se ejecuta si no se confirma
   confirmation-required:
     runs-on: ubuntu-latest
     if: github.event.inputs.confirm != 'si'
@@ -216,7 +108,5 @@ ENDSCRIPT
     steps:
     - name: ⚠️ Confirmation required
       run: |
-        echo "❌ Procesamiento cancelado"
-        echo "Para ejecutar, ve a Actions > 📝 Procesar Canales Manuales > Run workflow"
-        echo "Y escribe 'si' en el campo de confirmación"
+        echo "Procesamiento cancelado - confirmación requerida"
         exit 1
