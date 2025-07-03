@@ -60,44 +60,6 @@ jobs:
           exit 1
         fi
     
-    - name: 📝 Create processing script
-      run: |
-        cat > process_channels.py << 'EOF'
-import sys
-import os
-sys.path.insert(0, '.')
-
-# Importar y ejecutar sin input manual
-from add_manual_channels import ManualChannelProcessor, load_channel_ids_from_file, Config
-from pathlib import Path
-
-# Configurar API key desde environment
-if os.getenv('YOUTUBE_API_KEY'):
-    Config.YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY')
-
-print('🔍 Buscando archivo Excel...')
-if Path('CANALES ARGENTINOS FINALES.xlsx').exists():
-    print('📊 Cargando canales desde Excel...')
-    channel_ids = load_channel_ids_from_file('CANALES ARGENTINOS FINALES.xlsx')
-    print(f'📋 {len(channel_ids)} canales cargados')
-    
-    # Limitar canales si se especifica
-    max_channels = os.getenv('MAX_CHANNELS', '')
-    if max_channels and max_channels.isdigit():
-        channel_ids = channel_ids[:int(max_channels)]
-        print(f'🔢 Limitado a {len(channel_ids)} canales')
-    
-    # Procesar automáticamente
-    print('🚀 Iniciando procesamiento...')
-    processor = ManualChannelProcessor(channel_ids)
-    results = processor.process_all_channels()
-    
-    print(f'✅ Completado: {results["added"]} añadidos, {results["rejected"]} rechazados')
-else:
-    print('❌ Archivo Excel no encontrado')
-    sys.exit(1)
-EOF
-
     - name: 🤖 Process manual channels
       env:
         YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
@@ -107,8 +69,48 @@ EOF
         echo "🚀 Iniciando procesamiento de canales manuales..."
         echo "📅 Fecha: $(date)"
         
-        # Ejecutar script de procesamiento
-        python process_channels.py
+        # Crear script temporal
+        cat > temp_process.py << 'ENDSCRIPT'
+import sys
+import os
+sys.path.insert(0, '.')
+
+try:
+    from add_manual_channels import ManualChannelProcessor, load_channel_ids_from_file, Config
+    from pathlib import Path
+    
+    if os.getenv('YOUTUBE_API_KEY'):
+        Config.YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY')
+    
+    print('Buscando archivo Excel...')
+    if Path('CANALES ARGENTINOS FINALES.xlsx').exists():
+        print('Cargando canales desde Excel...')
+        channel_ids = load_channel_ids_from_file('CANALES ARGENTINOS FINALES.xlsx')
+        print(f'Canales cargados: {len(channel_ids)}')
+        
+        max_channels = os.getenv('MAX_CHANNELS', '')
+        if max_channels and max_channels.isdigit():
+            channel_ids = channel_ids[:int(max_channels)]
+            print(f'Limitado a: {len(channel_ids)} canales')
+        
+        print('Iniciando procesamiento...')
+        processor = ManualChannelProcessor(channel_ids)
+        results = processor.process_all_channels()
+        
+        print(f'Completado: {results["added"]} añadidos, {results["rejected"]} rechazados')
+    else:
+        print('ERROR: Archivo Excel no encontrado')
+        sys.exit(1)
+        
+except Exception as e:
+    print(f'ERROR: {e}')
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
+ENDSCRIPT
+        
+        # Ejecutar el script
+        python temp_process.py
     
     - name: 📊 Check results
       id: check_results
