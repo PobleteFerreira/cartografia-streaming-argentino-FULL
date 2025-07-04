@@ -1,7 +1,7 @@
 name: Agregar canales manualmente
 
 on:
-  workflow_dispatch: # Permite ejecución manual desde la UI de GitHub Actions
+  workflow_dispatch:
 
 jobs:
   agregar_canales:
@@ -16,13 +16,19 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Instalar dependencias
+      - name: Instalar dependencias necesarias
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install pandas google-api-python-client python-dotenv
 
-      - name: Ejecutar script de agregado manual
+      - name: Ejecutar script de agregado manual de canales
         env:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
         run: |
           python add_manual_channels.py
+
+      - name: Subir CSV actualizado como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamers_argentinos
+          path: streamers_argentinos.csv
