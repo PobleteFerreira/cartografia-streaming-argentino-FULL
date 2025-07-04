@@ -25,9 +25,11 @@ def get_channel_info(youtube, channel_id):
         items = response.get("items", [])
         if not items:
             return None
+        
         info = items[0]
         snippet = info.get("snippet", {})
         stats = info.get("statistics", {})
+        
         return {
             "canal_id": channel_id,
             "nombre_canal": snippet.get("title", ""),
@@ -51,19 +53,24 @@ def get_channel_info(youtube, channel_id):
         return None
 
 def main():
-# Leer IDs del XLSX
-col = None
-for candidato in ['channel_id', 'canal_id', 'id', 'ID', 'ChannelID']:
-    if candidato in canales_df.columns:
-        col = candidato
-        break
-if not col:
-    raise ValueError(
-        f"Ninguna columna de ID encontrada en el Excel. "
-        f"Esperado: channel_id, canal_id, id, ID, ChannelID. "
-        f"Columnas disponibles: {list(canales_df.columns)}"
-    )
-canal_ids = canales_df[col].dropna().astype(str).unique().tolist()
+    # Leer IDs del XLSX
+    canales_df = pd.read_excel(XLSX_FILE)
+    
+    col = None
+    for candidato in ['channel_id', 'canal_id', 'id', 'ID', 'ChannelID']:
+        if candidato in canales_df.columns:
+            col = candidato
+            break
+    
+    if not col:
+        raise ValueError(
+            f"Ninguna columna de ID encontrada en el Excel. "
+            f"Esperado: channel_id, canal_id, id, ID, ChannelID. "
+            f"Columnas disponibles: {list(canales_df.columns)}"
+        )
+    
+    canal_ids = canales_df[col].dropna().astype(str).unique().tolist()
+    
     # Leer IDs ya presentes en el CSV (si existe)
     if os.path.exists(CSV_FILE):
         existentes_df = pd.read_csv(CSV_FILE, dtype=str)
@@ -71,23 +78,24 @@ canal_ids = canales_df[col].dropna().astype(str).unique().tolist()
     else:
         existentes_df = pd.DataFrame()
         ids_existentes = set()
-
+    
     youtube = get_youtube_client()
     nuevos_registros = []
-
+    
     print(f"Procesando {len(canal_ids)} canales…")
+    
     for channel_id in canal_ids:
         if channel_id in ids_existentes:
             print(f"⏭️ Ya existe: {channel_id}")
             continue
-
+        
         info = get_channel_info(youtube, channel_id)
         if info:
             nuevos_registros.append(info)
             print(f"✅ Agregado: {info['nombre_canal']} ({channel_id})")
         else:
             print(f"❌ No se encontró información para: {channel_id}")
-
+    
     # Guardar en CSV
     if nuevos_registros:
         nuevos_df = pd.DataFrame(nuevos_registros)
@@ -95,6 +103,7 @@ canal_ids = canales_df[col].dropna().astype(str).unique().tolist()
             final_df = pd.concat([existentes_df, nuevos_df], ignore_index=True)
         else:
             final_df = nuevos_df
+        
         final_df.to_csv(CSV_FILE, index=False)
         print(f"\n✔️ Se agregaron {len(nuevos_registros)} canales nuevos a {CSV_FILE}")
     else:
