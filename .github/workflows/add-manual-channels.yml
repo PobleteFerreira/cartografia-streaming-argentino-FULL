@@ -16,17 +16,35 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Instalar dependencias necesarias
+      - name: Instalar dependencias esenciales
         run: |
           python -m pip install --upgrade pip
-          pip install pandas google-api-python-client python-dotenv
+          pip install pandas google-api-python-client python-dotenv openpyxl
 
+      # Opcional: Verifica que el archivo XLSX existe
+      - name: Verificar existencia del archivo XLSX
+        run: |
+          if [ ! -f "CANALES ARGENTINOS FINALES.xlsx" ]; then
+            echo "❌ El archivo CANALES ARGENTINOS FINALES.xlsx no está en el directorio raíz."
+            exit 1
+          fi
+
+      # Opcional: Verifica que add_manual_channels.py existe
+      - name: Verificar existencia del script
+        run: |
+          if [ ! -f "add_manual_channels.py" ]; then
+            echo "❌ El script add_manual_channels.py no está en el directorio raíz."
+            exit 1
+          fi
+
+      # Ejecución principal del script
       - name: Ejecutar script de agregado manual de canales
         env:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
         run: |
           python add_manual_channels.py
 
+      # Sube el CSV actualizado como artefacto descargable
       - name: Subir CSV actualizado como artifact
         uses: actions/upload-artifact@v4
         with:
