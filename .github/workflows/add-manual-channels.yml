@@ -1,112 +1,28 @@
-name: 📝 Procesar Canales Manuales
+name: Agregar canales manualmente
 
 on:
-  workflow_dispatch:
-    inputs:
-      confirm:
-        description: 'Confirmar procesamiento (escribe "si")'
-        required: true
-        default: 'no'
-        type: string
-      max_channels:
-        description: 'Máximo canales a procesar (vacío = todos)'
-        required: false
-        default: ''
-        type: string
+  workflow_dispatch: # Permite ejecución manual desde la UI de GitHub Actions
 
 jobs:
-  process-manual-channels:
+  agregar_canales:
     runs-on: ubuntu-latest
-    if: github.event.inputs.confirm == 'si'
-    
-    steps:
-    - name: 🚀 Checkout
-      uses: actions/checkout@v4
-    
-    - name: 🐍 Setup Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.9'
-    
-    - name: 📦 Install dependencies
-      run: |
-        pip install google-api-python-client openpyxl
-    
-    - name: 📁 Create directories
-      run: mkdir -p data logs cache
-    
-    - name: 🔍 Check files
-      run: |
-        echo "Verificando archivos necesarios..."
-        ls -la
-        test -f "CANALES ARGENTINOS FINALES.xlsx" || { echo "ERROR: Excel no encontrado"; exit 1; }
-        test -f "add_manual_channels.py" || { echo "ERROR: Script no encontrado"; exit 1; }
-        test -f "main.py" || { echo "ERROR: main.py no encontrado"; exit 1; }
-        echo "Todos los archivos encontrados"
-    
-    - name: 🔧 Prepare script
-      run: |
-        # Crear versión automática del script
-        cp add_manual_channels.py auto_process.py
-        
-        # Modificar para que no pida confirmación
-        sed -i 's/response = input.*/response = "y"/' auto_process.py
-        
-        # Añadir límite de canales si se especifica
-        if [ -n "${{ github.event.inputs.max_channels }}" ]; then
-          sed -i '/channel_ids = load_channel_ids_from_file/a\\n        # Limitar canales\n        if len(channel_ids) > ${{ github.event.inputs.max_channels }}:\n            channel_ids = channel_ids[:${{ github.event.inputs.max_channels }}]\n            print(f"🔢 Limitado a {len(channel_ids)} canales")' auto_process.py
-        fi
-    
-    - name: 🤖 Process channels
-      env:
-        YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
-      run: |
-        echo "Iniciando procesamiento..."
-        echo "Fecha: $(date)"
-        python auto_process.py
-    
-    - name: 📊 Check results
-      run: |
-        if [ -f "data/streamers_argentinos.csv" ]; then
-          lines=$(wc -l < data/streamers_argentinos.csv)
-          echo "CSV generado con $lines líneas"
-        else
-          echo "ERROR: CSV no generado"
-          exit 1
-        fi
-    
-    - name: 💾 Save results
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        git add data/ || true
-        git add cache/ || true
-        git add logs/ || true
-        
-        if ! git diff --staged --quiet; then
-          git commit -m "🤖 Canales procesados - $(date +'%Y-%m-%d %H:%M')"
-          git push
-          echo "Resultados guardados"
-        else
-          echo "Sin cambios para guardar"
-        fi
-    
-    - name: 📎 Upload artifacts
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: processing-results
-        path: |
-          logs/
-          data/
-        retention-days: 7
 
-  confirmation-required:
-    runs-on: ubuntu-latest
-    if: github.event.inputs.confirm != 'si'
-    
     steps:
-    - name: ⚠️ Confirmation required
-      run: |
-        echo "Procesamiento cancelado - confirmación requerida"
-        exit 1
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Ejecutar script de agregado manual
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        run: |
+          python add_manual_channels.py
