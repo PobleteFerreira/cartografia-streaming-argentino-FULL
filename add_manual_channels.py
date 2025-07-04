@@ -52,8 +52,6 @@ def get_channel_info(youtube, channel_id):
 
 def main():
 # Leer IDs del XLSX
-canales_df = pd.read_excel(XLSX_FILE)
-# Busca la columna correcta según tu archivo
 col = None
 for candidato in ['channel_id', 'canal_id', 'id', 'ID', 'ChannelID']:
     if candidato in canales_df.columns:
@@ -66,7 +64,6 @@ if not col:
         f"Columnas disponibles: {list(canales_df.columns)}"
     )
 canal_ids = canales_df[col].dropna().astype(str).unique().tolist()
-
     # Leer IDs ya presentes en el CSV (si existe)
     if os.path.exists(CSV_FILE):
         existentes_df = pd.read_csv(CSV_FILE, dtype=str)
