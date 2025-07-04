@@ -870,7 +870,6 @@ tr:hover {
 
         function setupEventListeners() {
             document.getElementById('searchInput').addEventListener('input', filterData);
-            document.getElementById('methodologyBtn').addEventListener('click', openMethodology);
         }
 
         function openMethodology() {
@@ -904,6 +903,10 @@ document.addEventListener('DOMContentLoaded', function() {
         currentPage = 1;
         renderTable();
     });
+    // ---> ESTE ES EL QUE FALTABA <---
+    document.getElementById('searchInput').addEventListener('input', filterData);
+
+    // (Puedes agregar otros listeners aquí si tienes más botones)
 });
         // Inicializar la aplicación
         function init() {
