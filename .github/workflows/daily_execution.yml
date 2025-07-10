@@ -1,43 +1,44 @@
-      - name: Hacer git pull para traer cambios previos
-        run: git pull origin main || true
-
 name: Ejecución Diaria - Cartografía Streaming Argentino
 
 on:
   schedule:
     # Ejecutar todos los días a las 02:00 UTC (23:00 Argentina)
-    - cron: '0 2  * * *'
+    - cron: '0 2 * * *'
   workflow_dispatch:
 
 jobs:
   execute_daily_search:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout código
         uses: actions/checkout@v4
-        
+
+      - name: Hacer git pull para traer cambios previos
+        run: git pull origin main || true
+
       - name: Setup Python 3.9
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
           cache: 'pip'
-          
+
       - name: Instalar dependencias
         run: |
           pip install --upgrade pip
           pip install google-api-python-client
-          
+
       - name: Crear directorios necesarios
         run: |
           mkdir -p data logs cache
-          
+
       - name: Ejecutar búsqueda diaria
         env:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           API_KEY_2: ${{ secrets.API_KEY_2 }}
         run: |
           python main.py
-          
+
       - name: Subir resultados como artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -47,7 +48,7 @@ jobs:
             logs/streaming_*.log
             cache/quota_tracker.json
           retention-days: 30
-          
+
       - name: Commit y push de resultados (si hay cambios)
         run: |
           git config --local user.email "action@github.com"
@@ -55,3 +56,4 @@ jobs:
           git add data/ cache/ logs/
           git diff --staged --quiet || git commit -m "🎯 Día $(date +'%j'): Fase $(($(date +'%j') % 4 + 1)) - $(date +'%Y-%m-%d') - Streamers reales detectados"
           git push || echo "No hay cambios para commitear"
+
