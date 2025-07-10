@@ -75,7 +75,7 @@ class Config:
     
     # Filtros ajustados
     MIN_SUBSCRIBERS = 500  # Mínimo de suscriptores
-    MIN_CERTAINTY_ARGENTINA = 80  # Certeza mínima de ser argentino
+    MIN_CERTAINTY_ARGENTINA = 65  # Certeza mínima de ser argentino
     MIN_CERTAINTY_STREAMING = 70  # Certeza mínima de hacer streaming
     
     # Paths
