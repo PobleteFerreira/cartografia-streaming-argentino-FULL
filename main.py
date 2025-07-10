@@ -69,13 +69,13 @@ class Config:
     COST_VIDEO_LIST = 3     # Lista de videos
     
     # Límites optimizados para no exceder cuota
-    MAX_PAGES_PER_SEARCH = 3  # Solo 3 páginas por búsqueda
-    MAX_RESULTS_PER_PAGE = 50  # 50 resultados por página
-    MAX_CHANNELS_PER_DAY = 350  # Máximo canales a analizar por día
+    MAX_PAGES_PER_SEARCH = 8 # Solo 8 páginas por búsqueda
+    MAX_RESULTS_PER_PAGE = 100  # 100 resultados por página
+    MAX_CHANNELS_PER_DAY = 800  # Máximo canales a analizar por día
     
     # Filtros ajustados
     MIN_SUBSCRIBERS = 500  # Mínimo de suscriptores
-    MIN_CERTAINTY_ARGENTINA = 80  # Certeza mínima de ser argentino
+    MIN_CERTAINTY_ARGENTINA = 65  # Certeza mínima de ser argentino
     MIN_CERTAINTY_STREAMING = 70  # Certeza mínima de hacer streaming
     
     # Paths
