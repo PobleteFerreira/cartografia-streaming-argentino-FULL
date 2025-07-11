@@ -493,6 +493,10 @@ tr:hover {
                 // Cargar desde tu archivo CSV real
                 const response = await fetch('./data/streamers_argentinos.csv');
                 const csvText = await response.text();
+
+                    // 👇 AGREGAR ESTAS LÍNEAS AQUÍ 👇
+        console.log('📄 Contenido completo del CSV:', csvText);
+        console.log('📏 Longitud del archivo:', csvText.length);
                 
                 // Usar un parser más robusto para CSV con saltos de línea en los campos
                 function parseCSVAdvanced(csvText) {
