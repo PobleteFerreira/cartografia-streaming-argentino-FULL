@@ -29,7 +29,8 @@ def limpiar_duplicados_csv(path_csv):
         df = pd.read_csv(path_csv)
         antes = len(df)
         df = df.drop_duplicates(subset='canal_id', keep='first')
-        df.to_csv(path_csv, index=False)
+       import csv  # Asegurate de tener esto en la parte superior del script
+        df.to_csv(path_csv, index=False, quoting=csv.QUOTE_ALL)
         print(f"✔️ Duplicados eliminados en {path_csv}: {antes-len(df)} eliminados, {len(df)} filas finales")
     except Exception as e:
         print(f"Error al limpiar duplicados: {e}")
