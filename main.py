@@ -1033,7 +1033,6 @@ class SearchStrategies:
                 ('tecnología argentina vivo', 1)
             ]
 
-# =============================================================================
 # MOTOR PRINCIPAL
 # =============================================================================
 
@@ -1045,47 +1044,60 @@ class StreamingArgentinaEngine:
         self.youtube = OptimizedYouTubeClient()
         self.processor = ChannelProcessor(self.youtube, self.logger_system)
         self.channels_found_today = 0
+
     def execute_daily_search(self):
         self.logger.info("="*80)
         self.logger.info("🚀 INICIANDO BÚSQUEDA DE CANALES EN VIVO ARGENTINOS")
         self.logger.info(f"📅 Fecha: {datetime.now():%Y-%m-%d %H:%M:%S}")
         self.logger.info(f"🔋 Cuota disponible: {self.youtube.quota_tracker.get_remaining():,}")
         self.logger.info("="*80)
+
         queries = SearchStrategies.get_daily_queries()
         self.logger.info(f"📋 Queries programadas: {len(queries)}")
+
         for query, max_pages in queries:
             if not self.youtube.can_continue():
                 self.logger.warning("⚠️ Deteniendo búsqueda - Límites alcanzados")
                 break
+
             self.logger.info(f"\n🔍 Buscando: '{query}' (máx {max_pages} páginas)")
             try:
                 channels = self.youtube.search_channels(query, max_pages)
                 if not channels:
                     self.logger.info(f"   No se encontraron resultados")
                     continue
+
                 self.logger.info(f"   📊 {len(channels)} canales encontrados")
                 processed = 0
+
                 for channel in channels:
                     if not self.youtube.can_continue():
                         break
+
                     result = self.processor.process_channel(channel)
                     if result:
                         self.channels_found_today += 1
+
                     processed += 1
                     if processed % 10 == 0:
                         self.logger_system.log_quota_status(
                             self.youtube.quota_tracker.used_today,
                             Config.MAX_DAILY_QUOTA
                         )
+
                 time.sleep(1)
+
             except Exception as e:
                 self.logger.error(f"Error procesando query '{query}': {e}")
                 continue
+
         self.processor.data_manager.save_state()
         self.youtube.cache.save_cache()
         self.youtube.quota_tracker.save_quota()
         self.logger_system.print_summary()
+
         return self.channels_found_today
+
 
 # =============================================================================
 # FUNCIÓN PRINCIPAL
