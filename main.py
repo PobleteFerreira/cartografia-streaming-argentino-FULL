@@ -306,6 +306,7 @@ class ArgentineDetector:
     def __init__(self):
         self.logger = logging.getLogger('StreamingArgentina')
         self._setup_patterns()
+
     def _setup_patterns(self):
         self.voseo_patterns = [
             r'\bvos\s+(?:tenés|sabés|querés|podés|andás|venís|hacés|decís|sos|estás)\b',
@@ -342,12 +343,14 @@ class ArgentineDetector:
             'uruguay': ['uruguay', 'uruguayo', 'montevideo', 'bo', 'ta'],
             'venezuela': ['venezuela', 'venezolano', 'caracas', 'maracaibo', 'pana']
         }
+
     def analyze_channel(self, channel_data: dict, videos_data: List[dict] = None) -> Dict:
         snippet = channel_data.get('snippet', {})
         title = snippet.get('title', '')
         description = snippet.get('description', '')
         country = snippet.get('country', '')
         full_text = f"{title} {description}".lower()
+
         other_country = self._check_other_countries(full_text)
         if other_country:
             return {
@@ -357,16 +360,26 @@ class ArgentineDetector:
                 'reason': f'Canal de {other_country}',
                 'indicators': []
             }
+
+        # ✅ Si el país declarado es AR, se acepta directamente
+        if country == 'AR':
+            return {
+                'is_argentine': True,
+                'certainty': 100,
+                'province': 'Argentina',
+                'indicators': ['metadata_AR'],
+                'score': 100,
+                'method': 'explicit_country'
+            }
+
         score = 0
         indicators = []
         method = 'cultural_analysis'
-        if country == 'AR':
-            score += 30
-            indicators.append('metadata_AR')
-            method = 'explicit_country'
-        elif country and country != 'AR':
+
+        if country and country != 'AR':
             score -= 50
             indicators.append(f'metadata_{country}')
+
         for code, prov in Config.CODIGOS_ARGENTINOS.items():
             if re.search(rf'\b{code}\b', full_text.upper()):
                 score += 20
@@ -375,6 +388,7 @@ class ArgentineDetector:
                 if method == 'cultural_analysis':
                     method = 'local_code'
                 break
+
         argentina_mentions = ['argentina', 'argentino', 'argentinos', 'argentinas', 'arg', '🇦🇷']
         for mention in argentina_mentions:
             if mention in full_text:
@@ -382,6 +396,7 @@ class ArgentineDetector:
                 indicators.append(f'menciona_{mention}')
                 if method == 'cultural_analysis':
                     method = 'explicit_country'
+
         voseo_count = 0
         for pattern in self.voseo_patterns:
             matches = re.findall(pattern, full_text, re.IGNORECASE)
@@ -391,6 +406,7 @@ class ArgentineDetector:
             indicators.append(f'voseo_{voseo_count}')
             if method == 'cultural_analysis' and voseo_count >= 2:
                 method = 'voseo_patterns'
+
         modismos_found = []
         for modismo, points in self.argentine_expressions.items():
             if re.search(rf'\b{modismo}\b', full_text):
@@ -398,6 +414,7 @@ class ArgentineDetector:
                 modismos_found.append(modismo)
         if modismos_found:
             indicators.append(f'modismos_{len(modismos_found)}')
+
         locations_found = []
         province = "Argentina"
         for location, points in self.location_keywords.items():
@@ -421,11 +438,13 @@ class ArgentineDetector:
                     }
                     province = city_to_province.get(loc, 'Argentina')
                     break
+
         if videos_data:
             video_score = self._analyze_video_content(videos_data)
             score += video_score
             if video_score > 0:
                 indicators.append(f'video_content_{video_score}')
+
         certainty = min(100, score)
         return {
             'is_argentine': certainty >= Config.MIN_CERTAINTY_ARGENTINA,
@@ -435,6 +454,7 @@ class ArgentineDetector:
             'score': score,
             'method': method
         }
+
     def _check_other_countries(self, text: str) -> Optional[str]:
         for country, keywords in self.country_exclusions.items():
             country_patterns = [
@@ -448,6 +468,7 @@ class ArgentineDetector:
             if keyword_count >= 3:
                 return country
         return None
+
     def _analyze_video_content(self, videos: List[dict]) -> int:
         score = 0
         for video in videos[:3]:
@@ -462,6 +483,7 @@ class ArgentineDetector:
                     score += 5
                     break
         return score
+
 
 # SIGUE EN LA PARTE 3...
 # =============================================================================
