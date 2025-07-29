@@ -902,90 +902,92 @@ class ChannelProcessor:
         self.live_detector = LiveContentDetector()
         self.categorizer = ContentCategorizer()
         self.data_manager = DataManager()
-   def process_channel(self, channel_snippet: dict) -> Optional[StreamerData]:
-    channel_id = (channel_snippet.get('id', {}).get('channelId') or channel_snippet.get('id'))
-    if not channel_id:
-        return None
-    if self.data_manager.is_processed(channel_id):
-        return None
-    try:
-        self.youtube.channels_analyzed_today += 1
-        channel_details = self.youtube.get_channel_details(channel_id)
-        if not channel_details:
-            self.data_manager.mark_processed(channel_id, True, "sin_detalles")
+
+    def process_channel(self, channel_snippet: dict) -> Optional[StreamerData]:
+        channel_id = (channel_snippet.get('id', {}).get('channelId') or channel_snippet.get('id'))
+        if not channel_id:
             return None
-
-        stats = channel_details.get('statistics', {})
-        subscribers = int(stats.get('subscriberCount', 0))
-        if subscribers < Config.MIN_SUBSCRIBERS:
-            self.logger_system.log_channel_rejected(
-                channel_id, "pocos_suscriptores", f"({subscribers})"
-            )
-            self.data_manager.mark_processed(channel_id, True, "pocos_suscriptores")
+        if self.data_manager.is_processed(channel_id):
             return None
-
-        arg_analysis = self.argentine_detector.analyze_channel(channel_details)
-
-        # MODIFICACIÓN AQUÍ 👉 Se permite si método es confiable y certeza ≥ 80
-        if not arg_analysis['is_argentine']:
-            metodo = arg_analysis.get('method', '')
-            certeza = arg_analysis.get('certainty', 0)
-            if metodo in ["explicit_country", "local_code"] and certeza >= 80:
-                self.logger.debug(f"⚠️ Canal aceptado por certeza ({certeza}%) y método {metodo}")
-            else:
-                reason = arg_analysis.get('reason', 'no_argentino')
-                country = arg_analysis.get('country', 'desconocido')
-                self.logger_system.log_channel_rejected(
-                    channel_id, reason, f"({country})"
-                )
-                self.data_manager.mark_processed(channel_id, True, reason)
+        try:
+            self.youtube.channels_analyzed_today += 1
+            channel_details = self.youtube.get_channel_details(channel_id)
+            if not channel_details:
+                self.data_manager.mark_processed(channel_id, True, "sin_detalles")
                 return None
 
-        live_analysis = self.live_detector.analyze_channel(channel_details)
-        if live_analysis['certainty'] < Config.MIN_CERTAINTY_STREAMING:
-            videos = self.youtube.get_recent_videos(channel_id)
-            if videos:
-                live_analysis = self.live_detector.analyze_channel(channel_details, videos)
+            stats = channel_details.get('statistics', {})
+            subscribers = int(stats.get('subscriberCount', 0))
+            if subscribers < Config.MIN_SUBSCRIBERS:
+                self.logger_system.log_channel_rejected(
+                    channel_id, "pocos_suscriptores", f"({subscribers})"
+                )
+                self.data_manager.mark_processed(channel_id, True, "pocos_suscriptores")
+                return None
 
-        if not live_analysis['is_live_content']:
-            self.logger_system.log_channel_rejected(
-                channel_id, "sin_contenido_vivo", f"(certeza: {live_analysis['certainty']:.0f}%)"
+            arg_analysis = self.argentine_detector.analyze_channel(channel_details)
+
+            # MODIFICACIÓN AQUÍ 👉 Se permite si método es confiable y certeza ≥ 80
+            if not arg_analysis['is_argentine']:
+                metodo = arg_analysis.get('method', '')
+                certeza = arg_analysis.get('certainty', 0)
+                if metodo in ["explicit_country", "local_code"] and certeza >= 80:
+                    self.logger.debug(f"⚠️ Canal aceptado por certeza ({certeza}%) y método {metodo}")
+                else:
+                    reason = arg_analysis.get('reason', 'no_argentino')
+                    country = arg_analysis.get('country', 'desconocido')
+                    self.logger_system.log_channel_rejected(
+                        channel_id, reason, f"({country})"
+                    )
+                    self.data_manager.mark_processed(channel_id, True, reason)
+                    return None
+
+            live_analysis = self.live_detector.analyze_channel(channel_details)
+            if live_analysis['certainty'] < Config.MIN_CERTAINTY_STREAMING:
+                videos = self.youtube.get_recent_videos(channel_id)
+                if videos:
+                    live_analysis = self.live_detector.analyze_channel(channel_details, videos)
+
+            if not live_analysis['is_live_content']:
+                self.logger_system.log_channel_rejected(
+                    channel_id, "sin_contenido_vivo", f"(certeza: {live_analysis['certainty']:.0f}%)"
+                )
+                self.data_manager.mark_processed(channel_id, True, "sin_contenido_vivo")
+                return None
+
+            videos = self.youtube.get_recent_videos(channel_id) if 'videos' not in locals() else videos
+            category = self.categorizer.categorize(channel_details, videos)
+            snippet = channel_details.get('snippet', {})
+
+            streamer_data = StreamerData(
+                canal_id=channel_id,
+                nombre_canal=snippet.get('title', 'Sin nombre'),
+                categoria=category,
+                provincia=arg_analysis.get('province', 'Argentina'),
+                ciudad='Por determinar',
+                suscriptores=subscribers,
+                certeza=arg_analysis['certainty'],
+                metodo_deteccion=arg_analysis.get('method', 'analysis_completo'),
+                indicadores_argentinidad=arg_analysis.get('indicators', []),
+                url=f"https://youtube.com/channel/{channel_id}",
+                fecha_deteccion=datetime.now().strftime('%Y-%m-%d'),
+                ultima_actividad=snippet.get('publishedAt', ''),
+                tiene_streaming=True,
+                descripcion=snippet.get('description', ''),
+                pais_detectado='Argentina',
+                videos_analizados=len(videos) if 'videos' in locals() else 0
             )
-            self.data_manager.mark_processed(channel_id, True, "sin_contenido_vivo")
+
+            self.data_manager.save_channel(streamer_data)
+            self.data_manager.mark_processed(channel_id)
+            self.logger_system.log_channel_found(streamer_data)
+            return streamer_data
+
+        except Exception as e:
+            self.logger.error(f"Error procesando canal {channel_id}: {e}")
+            self.data_manager.mark_processed(channel_id, True, "error_procesamiento")
             return None
 
-        videos = self.youtube.get_recent_videos(channel_id) if not 'videos' in locals() else videos
-        category = self.categorizer.categorize(channel_details, videos)
-        snippet = channel_details.get('snippet', {})
-
-        streamer_data = StreamerData(
-            canal_id=channel_id,
-            nombre_canal=snippet.get('title', 'Sin nombre'),
-            categoria=category,
-            provincia=arg_analysis.get('province', 'Argentina'),
-            ciudad='Por determinar',
-            suscriptores=subscribers,
-            certeza=arg_analysis['certainty'],
-            metodo_deteccion=arg_analysis.get('method', 'analysis_completo'),
-            indicadores_argentinidad=arg_analysis.get('indicators', []),
-            url=f"https://youtube.com/channel/{channel_id}",
-            fecha_deteccion=datetime.now().strftime('%Y-%m-%d'),
-            ultima_actividad=snippet.get('publishedAt', ''),
-            tiene_streaming=True,
-            descripcion=snippet.get('description', ''),
-            pais_detectado='Argentina',
-            videos_analizados=len(videos) if 'videos' in locals() else 0
-        )
-
-        self.data_manager.save_channel(streamer_data)
-        self.data_manager.mark_processed(channel_id)
-        self.logger_system.log_channel_found(streamer_data)
-        return streamer_data
-
-    except Exception as e:
-        self.logger.error(f"Error procesando canal {channel_id}: {e}")
-        self.data_manager.mark_processed(channel_id, True, "error_procesamiento")
-        return None
 
 # SIGUE EN LA PARTE 4...
 # =============================================================================
