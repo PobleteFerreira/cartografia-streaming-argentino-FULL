@@ -1021,57 +1021,77 @@ class SearchStrategies:
     """Estrategias de búsqueda optimizadas para encontrar canales en vivo argentinos"""
     @staticmethod
     def get_daily_queries() -> List[Tuple[str, int]]:
-        day_of_year = datetime.now().timetuple().tm_yday
-        phase = (day_of_year % 4) + 1
-        if phase == 1:
-            return [
-                ('argentina en vivo', 2),
-                ('argentina directo', 2),
-                ('streaming argentina', 2),
-                ('stream argentino', 2),
-                ('transmisión argentina', 1),
-                ('transmito argentina', 1),
-                ('vivo argentina', 1),
-                ('charlando argentina', 1),
-                ('cocinando argentina', 1),
-                ('cantando argentina', 1)
-            ]
-        elif phase == 2:
-            provinces = ['Buenos Aires', 'Córdoba', 'Rosario', 'Mendoza', 'La Plata']
-            queries = []
-            for prov in provinces:
-                queries.extend([
-                    (f'{prov} en vivo', 2),
-                    (f'{prov} streaming', 1),
-                    (f'{prov} directo', 1)
-                ])
-            return queries
-        elif phase == 3:
-            return [
-                ('che streaming', 2),
-                ('che en vivo', 2),
-                ('boludo streaming', 1),
-                ('transmito che', 1),
-                ('vivo buenos aires che', 1),
-                ('argentina vivo música', 1),
-                ('argentina vivo cocina', 1),
-                ('argentina vivo charla', 1),
-                ('podcast argentina vivo', 1),
-                ('argentina twitch', 1)
-            ]
-        else:  # phase 4
-            return [
-                ('gaming argentina vivo', 2),
-                ('música argentina vivo', 2),
-                ('cocina argentina directo', 1),
-                ('charla argentina vivo', 1),
-                ('podcast argentina streaming', 1),
-                ('educativo argentina vivo', 1),
-                ('arte argentina directo', 1),
-                ('deportes argentina vivo', 1),
-                ('fitness argentina streaming', 1),
-                ('tecnología argentina vivo', 1)
-            ]
+        return [
+            # 🔹 Generales
+            ('argentina en vivo', 3),
+            ('streaming argentina', 3),
+            ('argentina directo', 3),
+            ('stream argentino', 3),
+            ('transmisiones en vivo argentina', 2),
+            ('envivo argentina', 2),
+
+            # 🔹 Culturales / lenguaje
+            ('che en vivo', 2),
+            ('che streaming', 2),
+            ('boludo streaming', 2),
+            ('transmito che', 2),
+            ('vivo buenos aires che', 2),
+            ('re vivo argentina', 1),
+            ('mirá esto en vivo', 1),
+
+            # 🔹 Provincias / ciudades
+            ('buenos aires en vivo', 2),
+            ('cordoba en vivo', 2),
+            ('mendoza en vivo', 2),
+            ('rosario en vivo', 2),
+            ('la plata en vivo', 2),
+            ('tucuman en vivo', 2),
+            ('salta en vivo', 2),
+            ('neuquen en vivo', 2),
+            ('jujuy en vivo', 1),
+            ('santa fe streaming', 1),
+            ('chaco en vivo', 1),
+            ('corrientes en vivo', 1),
+            ('misiones en vivo', 1),
+            ('san juan en vivo', 1),
+
+            # 🔹 Temáticas
+            ('gaming argentina en vivo', 3),
+            ('música argentina en vivo', 3),
+            ('podcast argentina en vivo', 3),
+            ('cocina argentina en vivo', 2),
+            ('tecnología argentina en vivo', 2),
+            ('charla argentina en vivo', 2),
+            ('arte argentina streaming', 2),
+            ('deportes argentina en vivo', 2),
+            ('educativo argentina en vivo', 2),
+            ('fitness argentina streaming', 2),
+            ('noticias en vivo argentina', 2),
+            ('radio en vivo argentina', 2),
+            ('stream de arte argentina', 1),
+            ('opiniones argentina en vivo', 1),
+            ('stand up argentino en vivo', 1),
+
+            # 🔹 Plataformas y crossover
+            ('argentina twitch', 2),
+            ('vivo en twitch argentina', 1),
+            ('youtube live argentina', 1),
+            ('tiktok live argentina', 1),
+            ('facebook gaming argentina', 1),
+
+            # 🔹 Experimentales
+            ('charlando con subs argentina', 1),
+            ('live desde argentina', 1),
+            ('donaciones en vivo argentina', 1),
+            ('chat en vivo argentina', 1),
+            ('charla con invitados argentina', 1),
+            ('preguntas en vivo argentina', 1),
+            ('contenido real en vivo', 1),
+            ('creadores argentinos live', 1),
+            ('en vivo sin filtro argentina', 1),
+            ('cosas que pasan en argentina en vivo', 1)
+        ]
+
 
 # MOTOR PRINCIPAL
 # =============================================================================
