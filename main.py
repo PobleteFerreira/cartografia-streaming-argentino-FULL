@@ -67,17 +67,17 @@ class StreamerData:
 class Config:
     YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY', '')
     API_KEY_2 = os.getenv('API_KEY_2', '')
-    MAX_DAILY_QUOTA = 20000
-    SAFETY_BUFFER = 4000
-    QUOTA_WARNING_THRESHOLD = 14000
-    COST_SEARCH = 100
-    COST_CHANNEL_DETAILS = 3
-    COST_VIDEO_LIST = 3
-    MAX_PAGES_PER_SEARCH = 8
-    MAX_RESULTS_PER_PAGE = 100
-    MAX_CHANNELS_PER_DAY = 800
-    MIN_SUBSCRIBERS = 500
-    MIN_CERTAINTY_ARGENTINA = 65
+    MAX_DAILY_QUOTA = 70000                # antes 20000
+    SAFETY_BUFFER = 5000                   # antes 4000
+    QUOTA_WARNING_THRESHOLD = 58000        # para alertar antes del tope
+    COST_SEARCH = 100                      # igual
+    COST_CHANNEL_DETAILS = 3               # igual
+    COST_VIDEO_LIST = 3                    # igual
+    MAX_PAGES_PER_SEARCH = 15              # antes 8 → más resultados por búsqueda
+    MAX_RESULTS_PER_PAGE = 100             # máximo permitido
+    MAX_CHANNELS_PER_DAY = 3000            # antes 800 → ahora procesás más
+    MIN_SUBSCRIBERS = 500                  # podés bajarlo a 300 si querés más exploración
+    MIN_CERTAINTY_ARGENTINA = 60
     MIN_CERTAINTY_STREAMING = 70
     BASE_DIR = Path(__file__).parent
     DATA_DIR = BASE_DIR / 'data'
@@ -88,6 +88,7 @@ class Config:
     REJECTED_CHANNELS = CACHE_DIR / 'rejected_channels.pkl'
     API_CACHE = CACHE_DIR / 'api_cache.json'
     QUOTA_TRACKER = CACHE_DIR / 'quota_tracker.json'
+    # demás constantes (provincias, ciudades, etc.) se mantienen igual
     PROVINCIAS_ARGENTINAS = {
         "Buenos Aires", "CABA", "Ciudad de Buenos Aires", "Capital Federal",
         "Córdoba", "Santa Fe", "Mendoza", "Tucumán", "Salta", "Entre Ríos",
