@@ -2,8 +2,9 @@ name: Ejecución Diaria - Cartografía Streaming Argentino
 
 on:
   schedule:
-    # Ejecutar todos los días a las 02:00 UTC (23:00 Argentina)
-    - cron: '0 2 * * *'
+    # Ejecutar todos los días a las 12:00 y 20:00 (Argentina) => 15:00 y 23:00 UTC
+    - cron: '0 15 * * *'
+    - cron: '0 23 * * *'
   workflow_dispatch:
 
 jobs:
@@ -56,4 +57,5 @@ jobs:
           git add data/ cache/ logs/
           git diff --staged --quiet || git commit -m "🎯 Día $(date +'%j'): Fase $(($(date +'%j') % 4 + 1)) - $(date +'%Y-%m-%d') - Streamers reales detectados"
           git push || echo "No hay cambios para commitear"
+
 
