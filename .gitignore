@@ -1,48 +1,45 @@
-# Ignorar archivos sensibles y temporales
-
-# Variables de entorno
+# --- Secretos ---
 .env
 *.env
-
-# API Keys y configuración sensible
+!.env.example
 config/secrets.json
 api_keys.txt
+*.pem
+*.key
+client_secret*.json
+service-account*.json
 
-# Archivos de datos generados (EXCEPTO el CSV final del proyecto)
-data/*.db
-data/*.json
-data/backup/
-
-# PERMITIR específicamente el CSV final del proyecto
-# data/*.csv  ← COMENTADO para permitir el CSV principal
+# --- Datos ---
+# Se publica sólo el listado principal (salida de main.py), el ejemplo y el
+# README. Cualquier otro archivo en data/ (copias, pruebas) queda local.
+data/*
+!data/README.md
+!data/ejemplo_*.csv
 !data/streamers_argentinos.csv
+data/simulacion_*.csv
+*.xlsx
+*.xlsm
 
-# Logs
-logs/*.log
-logs/*.txt
-
-# Cache
-cache/*.json
-cache/*.pkl
+# --- Estado, caché y logs ---
+cache/
+logs/
 __pycache__/
 *.pyc
 *.pyo
 
-# Entorno virtual
+# --- Entornos virtuales ---
 venv/
 env/
 .venv/
 
-# IDEs
+# --- IDEs y sistema operativo ---
 .vscode/
 .idea/
 *.swp
 *.swo
-
-# Sistema operativo
 .DS_Store
 Thumbs.db
 
-# Backup files
+# --- Backups ---
 *.bak
 *.backup
