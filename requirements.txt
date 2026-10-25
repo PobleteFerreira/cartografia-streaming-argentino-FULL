@@ -1,0 +1,7 @@
+# Instalar con: pip install -r requirements.txt
+google-api-python-client>=2.108,<3
+python-dotenv>=1.0,<2
+tzdata>=2024.1; sys_platform == "win32"
+
+# Opcional: sólo para leer listas manuales en .xlsx
+# openpyxl>=3.1,<4

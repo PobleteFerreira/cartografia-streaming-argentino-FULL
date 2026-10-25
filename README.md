@@ -1,322 +1,168 @@
-# cartografia-streaming-argentino-FULL
+# 🇦🇷 Cartografía del Streaming Argentino
 
-# 🇦🇷 Cartografía Completa del Streaming Argentino
+Herramienta para encontrar canales argentinos de YouTube que hacen
+**transmisiones en vivo**, con una estrategia de búsqueda pensada para
+compensar el sesgo de visibilidad hacia los canales de CABA y Buenos Aires.
 
-> **Rompiendo el sesgo algorítmico que oculta el streaming provincial**
+Es una propuesta metodológica: el código está abierto para que cualquiera lo
+use con su propia API key. El listado generado hasta ahora está en
+[`data/streamers_argentinos.csv`](data/streamers_argentinos.csv).
 
-## 🎯 Objetivo del Proyecto
+## Artículo
 
-Este proyecto realiza **la primera cartografía completa** de streamers argentinos en YouTube, solucionando un problema crítico: **el algoritmo de YouTube oculta sistemáticamente a streamers de provincias**, manteniéndolos en las páginas 20-50+ mientras los porteños dominan las páginas 1-5.
+Este repositorio está citado en un artículo (consultado el 25/2/2026). La
+versión del código de esa fecha está en la etiqueta
+[`version-articulo-2026-02`](../../tree/version-articulo-2026-02). A esa
+fecha, la ejecución del script había arrojado **1.005 canales potenciales**
+de ser incluidos en futuros estudios; ese listado está en
+[`data/streamers_argentinos.csv`](data/streamers_argentinos.csv) (y, tal como
+estaba ese día, en la misma etiqueta).
 
-### 🔍 El Problema que Resolvemos
+La versión actual corrige problemas de aquella: la búsqueda profunda y las
+cuatro fases ahora se ejecutan como estaban descritas, la detección de
+contenido en vivo usa los datos de la API en lugar de palabras clave y la
+asignación de provincia es más precisa.
 
-```
-SESGO ALGORÍTMICO ACTUAL:
-├── Páginas 1-5:  90% streamers de CABA/Buenos Aires
-├── Páginas 6-15:  8% streamers de Córdoba/Rosario  
-├── Páginas 16-30: 2% streamers del resto del país
-└── Páginas 31-50: <1% streamers provinciales (INVISIBLES)
+## El problema
 
-RESULTADO: 80% del streaming argentino real permanece "oculto"
-```
+Los resultados de búsqueda de YouTube priorizan canales grandes y, en la
+práctica, porteños. Los canales provinciales pequeños aparecen muy abajo o
+no aparecen. Una búsqueda genérica ("streaming argentina") devuelve siempre
+los mismos canales; para llegar al resto hace falta buscar más profundo y con
+términos locales.
 
-### ✅ Nuestra Solución
+## Estrategia: cuatro fases en un ciclo de 120 días
 
-- **Búsqueda ultra-profunda**: Exploramos hasta 50 páginas por término
-- **Códigos locales específicos**: Detectamos "MZA", "COR", "SLA", etc.
-- **PNL argentino especializado**: Reconoce voseo, lunfardo, cultura regional
-- **Distribución temporal anti-sesgo**: Más tiempo en provincias remotas
+| Fase | Días | Qué busca | Ejemplos |
+|---|---|---|---|
+| 1 | 1-30 | Términos generales | "streaming argentina", "podcast argentina en vivo" |
+| 2 | 31-60 | Provincias y ciudades; las remotas reciben más profundidad | "streaming Catamarca", "en vivo Ushuaia" |
+| 3 | 61-90 | Códigos locales combinados con formatos | "charlas MZA", "gaming SLA", "bunker CBA" |
+| 4 | 91-120 | Cultura regional, para micro-streamers | "chamamé en vivo", "folklore streaming", "truco en vivo" |
 
-## 🚀 Instalación Rápida
+Cada corrida retoma donde quedó la anterior: guarda qué términos terminó y en
+qué página iba. Si un día se agota la cuota, al siguiente sigue desde ahí.
+Si los términos de la fase actual se terminan antes de tiempo, avanza con los
+de las otras fases. Al día 121 empieza un ciclo nuevo; los canales ya
+analizados no se vuelven a analizar.
 
-### Prerrequisitos
+**Límite real de profundidad:** la API devuelve 50 resultados por página y
+deja de dar páginas siguientes alrededor de los 500 resultados por término.
+Por eso la profundidad se gana sobre todo multiplicando términos específicos,
+más que pidiendo más páginas de un término general.
 
-1. **Python 3.8+**
-2. **API Key de YouTube Data API v3**
-3. **Git** (para clonar el repositorio)
+## Cómo decide si un canal entra
 
-### Paso a Paso
+Un canal se guarda si pasa los tres filtros:
+
+1. **Suscriptores** ≥ `MIN_SUSCRIPTORES` (500 por defecto). Los canales que
+   ocultan el número no se descartan por esto.
+2. **Es argentino** (certeza ≥ `MIN_CERTEZA_ARGENTINA`, 70 por defecto):
+   - País declarado en el canal = AR → certeza 100.
+   - Si no: menciona Argentina o 🇦🇷, códigos locales en mayúsculas (MZA,
+     CBA, SLA, NQN...), provincias y ciudades, voseo ("vos tenés",
+     "suscribite", "seguinos"), modismos (pibe, laburo, bondi...) y el
+     lenguaje de sus videos recientes.
+   - Se excluye si dice "soy de / desde / vivo en" otro país, o si nombra
+     dos o más términos propios de otro país (ciudades, gentilicios, jerga).
+   - Los nombres ambiguos (Misiones, Corrientes, Salta, San Juan, Córdoba...)
+     suman poco y sólo ubican al canal si hay otra señal argentina.
+3. **Hace vivos**: al menos una de sus últimas 50 subidas fue una
+   transmisión en vivo, según los datos de la propia API
+   (`liveStreamingDetails`). Las palabras clave ("en vivo", Twitch, OBS,
+   horarios) se guardan como indicadores, pero no alcanzan solas.
+
+La provincia se asigna con esta prioridad: código local → provincia →
+ciudad → provincia ambigua. Si no hay ninguna, queda "Argentina".
+
+## Instalación
+
+Requiere Python 3.9 o superior y una API key de YouTube Data API v3.
 
 ```bash
-# 1. Clonar repositorio
-git clone https://github.com/tu-usuario/cartografia-streaming-argentino.git
+git clone https://github.com/PobleteFerreira/cartografia-streaming-argentino.git
 cd cartografia-streaming-argentino
-
-# 2. Crear entorno virtual
 python -m venv venv
-source venv/bin/activate  # En Windows: venv\Scripts\activate
-
-# 3. Instalar dependencias
+source venv/bin/activate        # En Windows: venv\Scripts\activate
 pip install -r requirements.txt
-
-# 4. Instalar modelo de español para spaCy
-python -m spacy download es_core_news_sm
-
-# 5. Configurar API Key
-export YOUTUBE_API_KEY='tu_api_key_aqui'  # En Windows: set YOUTUBE_API_KEY=tu_api_key
-
-# 6. Ejecutar primera vez
-python main.py
+cp .env.example .env            # y completá YOUTUBE_API_KEY
 ```
 
-### 🔑 Obtener YouTube API Key
+### Conseguir la API key
 
-1. Ve a [Google Cloud Console](https://console.cloud.google.com/)
-2. Crea un proyecto nuevo o selecciona uno existente
-3. Habilita "YouTube Data API v3"
-4. Crea credenciales (API Key)
-5. Configura la variable de entorno:
+1. Entrá a [Google Cloud Console](https://console.cloud.google.com/) y creá un proyecto.
+2. Habilitá **YouTube Data API v3**.
+3. En *Credenciales*, creá una **clave de API**.
+4. **Restringila**: en *Restricciones de API* elegí sólo YouTube Data API v3.
+   Así, si la clave se filtra, no sirve para otra cosa.
+5. Pegala en `.env`. Ese archivo está en `.gitignore`: nunca lo subas.
+
+## Uso
 
 ```bash
-# Linux/Mac
-export YOUTUBE_API_KEY='AIzaSyC...'
-
-# Windows
-set YOUTUBE_API_KEY=AIzaSyC...
-
-# O créa un archivo .env
-echo "YOUTUBE_API_KEY=AIzaSyC..." > .env
+python main.py                  # corrida del día (fase según el día del ciclo)
+python main.py --fase 3         # forzar una fase
+python main.py --max-terminos 5 # corrida corta
+python main.py --simulacion     # probar todo el flujo sin API key
+python main.py -v               # ver también los canales rechazados y por qué
 ```
 
-## 📊 Estrategia de Búsqueda Anti-Sesgo
+Resultados: `data/streamers_argentinos.csv` (formato en
+[data/README.md](data/README.md); hay un ejemplo con canales inventados en
+`data/ejemplo_streamers.csv`).
 
-### Fases del Proyecto (120 días)
+### Cuota
 
-#### **FASE 1 (Días 1-30): Términos Generales**
-```
-"argentina", "argentino", "streaming argentina"
-└── Profundidad: 20-30 páginas (captura grandes y medianos)
-```
+YouTube da 10.000 unidades por día y por proyecto. Una página de búsqueda
+cuesta 100; analizar un canal cuesta ~2 (datos del canal en lotes de 50, sus
+últimas subidas y los detalles de esas subidas). Con una clave se recorren
+unas 40-45 páginas de búsqueda por día. Con una segunda clave de **otro
+proyecto** (`API_KEY_2`) se duplica. El script lleva la cuenta por clave,
+rota automáticamente cuando una se agota y la cuota se reinicia a la
+medianoche del Pacífico, como en YouTube.
 
-#### **FASE 2 (Días 31-60): Provincias Específicas** 
-```
-Provincias grandes: "streaming Córdoba" → 40 páginas
-Provincias medianas: "gaming Tucumán" → 50 páginas  
-Provincias remotas: "streaming Catamarca" → 50 páginas
-```
+### Corrida diaria automática
 
-#### **FASE 3 (Días 61-90): Códigos Locales**
-```
-"bunker MZA", "charlas COR", "gaming SLA"
-└── 50 páginas cada código (detecta streamers como "El Bunker MZA")
-```
-
-#### **FASE 4 (Días 91-120): Cultura Regional**
-```
-"mate gaming", "folklore streaming", "che gaming"
-└── Términos híper-específicos para micro-streamers
-```
-
-## 🔬 Tecnología de Detección Argentinidad
-
-### Niveles de Detección
-
-1. **Explícita (95% certeza)**
-   - Menciona "Argentina" directamente
-   - Códigos locales: "MZA", "COR", "ROS"
-   - Provincias: "Mendoza", "Córdoba", "Salta"
-
-2. **Cultural (85% certeza)**
-   - Voseo: "vos tenés", "vos sabés"
-   - Jerga: "che", "boludo", "laburo", "bondi"
-   - Cultura: "mate", "asado", "tango", "folklore"
-
-3. **Contextual (75% certeza)**
-   - Horarios: "20hs ART", "hora argentina"
-   - Referencias: fútbol argentino, eventos locales
-
-### Ejemplo de Análisis
-
-```python
-# Canal: "El Bunker MZA - Charlas todos los lunes 20hs"
-resultado = {
-    'argentino': True,
-    'metodo': 'codigo_local',
-    'codigo': 'MZA',
-    'provincia': 'Mendoza',
-    'confianza': 92,
-    'indicadores': ['mza', 'charlas', '20hs', 'lunes']
-}
-```
-
-## 📁 Estructura del Proyecto
-
-```
-cartografia-streaming-argentino/
-├── main.py                    # Script principal de ejecución
-├── requirements.txt           # Dependencias Python
-├── README.md                 # Este archivo
-├── .env.example              # Ejemplo de variables de entorno
-├── .gitignore               # Archivos a ignorar en Git
-├── data/                    # Datos generados
-│   ├── streamers_argentinos.db      # Base de datos SQLite
-│   └── cartografia_streaming_argentino.csv  # Resultado final CSV
-├── logs/                    # Registros de ejecución
-│   └── ejecucion_YYYYMMDD.log
-├── cache/                   # Cache de API para optimización
-│   └── api_cache.json
-└── docs/                    # Documentación adicional
-    ├── metodologia.md
-    └── estadisticas.md
-```
-
-## ⚙️ Configuración Avanzada
-
-### Variables de Entorno
+En tu computadora. No se usa GitHub Actions porque la cuota y las claves
+quedan bajo tu control y no hace falta guardarlas como secretos del repo.
 
 ```bash
-# Obligatorias
-YOUTUBE_API_KEY=tu_api_key                # API Key de YouTube
-
-# Opcionales (con valores por defecto)
-CUOTA_DIARIA_LIMITE=10000                # Límite diario de llamadas
-MIN_SUSCRIPTORES=500                     # Mínimo de suscriptores
-MIN_CERTEZA_ARGENTINA=70                 # Mínimo % de certeza
+# Linux/Mac (crontab -e): todos los días a las 2:00
+0 2 * * * cd /ruta/al/proyecto && venv/bin/python main.py >> logs/cron.log 2>&1
 ```
 
-### Personalizar Búsquedas
+En Windows, con el Programador de tareas, ejecutando
+`venv\Scripts\python.exe main.py` con la carpeta del proyecto como directorio
+de inicio.
 
-Edita las estrategias en el código:
+## Estructura
 
-```python
-# En la clase EstrategiaBusqueda
-def obtener_terminos_personalizados(self):
-    return [
-        ('tu_termino_especifico', 25),  # (término, páginas_máximas)
-        ('streaming tu_provincia', 40),
-    ]
+```
+main.py              # búsqueda, detectores y estado
+requirements.txt
+.env.example         # plantilla de configuración (copiar a .env)
+data/                # listado de canales y ejemplo de formato
+cache/               # estado de la búsqueda y cuota (no se sube)
+logs/                # registros de cada corrida (no se suben)
+tests/               # tests en modo simulación
 ```
 
-## 📈 Uso y Ejecución
-
-### Ejecución Manual
+## Tests
 
 ```bash
-# Ejecutar una vez
-python main.py
-
-# Ver progreso en tiempo real
-tail -f logs/ejecucion_$(date +%Y%m%d).log
+python -m unittest discover -s tests -v
 ```
 
-### Automatización Diaria
+No usan la API ni gastan cuota.
 
-```bash
-# Crontab para ejecución diaria a las 2:00 AM
-0 2 * * * cd /path/to/proyecto && python main.py >> logs/cron.log 2>&1
-```
+## Ajustar la búsqueda
 
-### Monitoreo de Progreso
+- Términos de cada fase: `SearchStrategies` en `main.py` (pares
+  `(término, páginas)`).
+- Códigos locales, provincias, ciudades y nombres ambiguos: `Config`.
+- Modismos, voseo y exclusiones por país: `ArgentineDetector`.
+- Categorías de contenido: `ContentCategorizer`.
 
-```python
-# Ver estadísticas actuales
-from main import DatabaseManager
-db = DatabaseManager()
-stats = db.obtener_estadisticas()
-print(f"Total streamers: {stats['total_streamers']}")
-print(f"Por provincia: {stats['por_provincia']}")
-```
-
-## 📊 Resultados Esperados
-
-### Distribución Objetivo (Sin Sesgo)
-```
-✅ ÉXITO (distribución demográfica real):
-├── Buenos Aires: 40-45% (proporcional a población)
-├── Córdoba: 10-12%
-├── Santa Fe: 8-10% 
-├── Mendoza: 5-7%
-└── Resto provincias: 30-35% ⭐ (LO QUE SE RESCATA)
-```
-
-### Métricas de Éxito
-- **Mínimo**: ≥20 streamers por provincia
-- **Medio**: ≥50 streamers por provincia  
-- **Óptimo**: ≥100 streamers por provincia grande
-
-### Casos de Éxito Detectados
-- "El Bunker MZA" → Mendoza (detectado por código local)
-- Streamers de folklore salteño → Salta (detectado por cultura)
-- Gaming patagónico → Neuquén/Bariloche (detectado por región)
-
-## 🔧 Resolución de Problemas
-
-### Error: "API Key no válida"
-```bash
-# Verificar que la API key esté configurada
-echo $YOUTUBE_API_KEY
-
-# Verificar que YouTube Data API v3 esté habilitada en Google Cloud
-```
-
-### Error: "Cuota agotada"
-```bash
-# El script se pausa automáticamente al 80% de la cuota
-# Logs mostrarán: "⚠️ Cuota alta: 8000/10000"
-```
-
-### Pocos resultados encontrados
-```bash
-# Verificar conectividad
-ping youtube.com
-
-# Revisar logs para errores específicos
-cat logs/ejecucion_*.log | grep ERROR
-```
-
-## 🤝 Contribuir al Proyecto
-
-### Reportar Streamers Perdidos
-Si conoces streamers argentinos que no aparecen en los resultados:
-
-1. Abre un [Issue](https://github.com/tu-usuario/cartografia-streaming-argentino/issues)
-2. Incluye: nombre del canal, provincia, URL de YouTube
-3. Especifica por qué debería ser detectado
-
-### Mejorar Detección Regional
-```python
-# Agregar códigos locales en ConfiguracionProyecto
-CODIGOS_ARGENTINOS = {
-    "TU_CODIGO": "Tu_Provincia",  # Agregar aquí
-    # ...
-}
-```
-
-### Nuevas Categorías
-```python
-# En AnalizadorCanal.categorizar_canal()
-categorias = {
-    'Tu_Categoria': ['palabra1', 'palabra2', 'palabra3'],
-    # ...
-}
-```
-
-## 📜 Licencia
-
-Este proyecto está bajo licencia MIT. Ver [LICENSE](LICENSE) para detalles.
-
-## 🙏 Agradecimientos
-
-- **Comunidad de streamers argentinos** por la inspiración
-- **Provincias invisibilizadas** por el contenido único que crean
-- **Contribuidores** que ayudan a mejorar la detección
-
-## 📞 Contacto
-
-- **Issues**: [GitHub Issues](https://github.com/tu-usuario/cartografia-streaming-argentino/issues)
-- **Discusiones**: [GitHub Discussions](https://github.com/tu-usuario/cartografia-streaming-argentino/discussions)
-- **Email**: tu-email@ejemplo.com
-
----
-
-<div align="center">
-
-**🇦🇷 Hecho con ❤️ para visibilizar el streaming argentino real**
-
-*"La verdadera Argentina streaming está en las páginas 20-50 de YouTube"*
-
-[![Streamers Detectados](https://img.shields.io/badge/Streamers%20Detectados-0-blue)]()
-[![Provincias Cubiertas](https://img.shields.io/badge/Provincias%20Cubiertas-0%2F23-green)]()
-[![Última Ejecución](https://img.shields.io/badge/Última%20Ejecución-Nunca-red)]()
-
-</div>
+Si conocés canales que deberían aparecer y no aparecen, abrí un issue con el
+link al canal y los términos que usa en su descripción, para mejorar la
+detección.
